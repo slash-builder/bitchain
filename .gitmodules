@@ -1,0 +1,4 @@
+[submodule ".github/agents"]
+	path = .github/agents
+	url = git@github.com:lockamy-studios/agents.git
+	branch = main

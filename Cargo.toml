@@ -1,20 +1,32 @@
 [package]
 name = "bitchain"
-version = "0.1.0"
+version = "0.2.0"
 authors = ["Douglas Lockamy <dlockamy@lockamystudios.com>"]
 edition = "2021"
-description = "A lightweight virtual filesystem that uses the internet as block storage"
-repository = "https://github.com/dlockamy/bitchain"
+description = "Content-addressed binary storage Kit — format v2: BLAKE3 addressing, recursive fragmentation, Zstd-compressed packfiles, per-partition dedup"
+repository = "https://github.com/slash-builder/bitchain"
 license = "Apache-2.0"
-keywords = ["binary", "versioning", "content-addressed", "s3", "cli"]
+keywords = ["binary", "content-addressed", "packfile", "blake3", "storage"]
 categories = ["command-line-utilities", "filesystem"]
 
+[lib]
+name = "bitchain"
+path = "src/lib.rs"
+
+[[bin]]
+name = "bitchain"
+path = "src/main.rs"
+
 [dependencies]
+blake3 = "1"
+zstd = "0.13"
+fastcdc = "3"
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-sha2 = "0.10"
-tokio = { version = "1", features = ["full"] }
-aws-sdk-s3 = "1.0"
-aws-config = "1.0"
-reqwest = { version = "0.11", features = ["json"] }
+thiserror = "1.0"
+hex = "0.4"
+walkdir = "2"
+
+[dev-dependencies]
+tempfile = "3"

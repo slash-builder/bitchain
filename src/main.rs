@@ -1,676 +1,275 @@
-use aws_config::{BehaviorVersion, Region};
-use aws_sdk_s3::config::Credentials;
-use aws_sdk_s3::primitives::ByteStream;
-use clap::{CommandFactory, Parser, Subcommand};
-use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
-use std::env;
-use std::fs;
-use std::fs::File;
-use std::io::{self, BufReader, Read, Write};
-use std::path::{Path, PathBuf};
+mod cli;
 
-const DEFAULT_BLOCK_SIZE: usize = 1024 * 1024;
+use bitchain::fragment::ChunkingProfile;
+use clap::{Parser, Subcommand};
+use std::path::PathBuf;
+use std::process::ExitCode;
+
+const DEFAULT_PARTITION: &str = "default";
+const DEFAULT_TARGET_UTILIZATION: f64 = 80.0;
 
 #[derive(Parser, Debug)]
-#[command(name = "bitchain", about = "Manage bitchains: JSON objects listing URIs to binary blocks.", long_about = None, disable_help_subcommand = true)]
+#[command(
+    name = "bitchain",
+    about = "Content-addressed binary storage — format v2 (BLAKE3, packfiles, partitions).",
+    long_about = None
+)]
 struct Cli {
-    /// Create or update the config file
-    #[arg(long)]
-    setup_config: bool,
+    /// Store root for pack/unpack/verify/ls/gc. Defaults to
+    /// ~/.bitchain/store. (push/pull take their store roots as arguments.)
+    #[arg(long, global = true)]
+    store: Option<PathBuf>,
 
     #[command(subcommand)]
-    command: Option<Commands>,
+    command: Commands,
 }
 
 #[derive(Subcommand, Debug)]
 enum Commands {
-    /// Ingest a file or directory and produce a bitchain JSON object containing block URIs
-    Ingest {
-        /// Input file or directory to break into blocks
-        #[arg(short, long)]
-        input: PathBuf,
+    /// Ingest a file or directory, chunk + hash + compress it into the
+    /// store, and print the manifest's root hash.
+    Pack {
+        /// File or directory to pack.
+        path: PathBuf,
 
-        /// Directory to store block files locally
+        /// Partition: either a 32-hex-char partition id, or a
+        /// household/namespace string to derive one from.
+        #[arg(long, default_value = DEFAULT_PARTITION)]
+        partition: String,
+
+        /// Logical identity for the whole pack. Defaults to
+        /// `Context::ANONYMOUS` (identity is content).
         #[arg(long)]
-        output_dir: Option<PathBuf>,
+        identity: Option<String>,
 
-        /// Block size in bytes for splitting input data
-        #[arg(long, default_value_t = DEFAULT_BLOCK_SIZE)]
-        block_size: usize,
-
-        /// Base URI to use for generated block references
+        /// Use fixed-size chunking instead of FastCDC, with this block size.
         #[arg(long)]
-        uri_base: Option<String>,
+        fixed_block_size: Option<u64>,
 
-        /// Output bitchain JSON file path
-        #[arg(long)]
-        output: Option<PathBuf>,
-
-        /// Do not write files or upload objects; only simulate the workflow
-        #[arg(long)]
-        dry_run: bool,
+        /// FastCDC parameters (ignored if --fixed-block-size is set).
+        #[arg(long, default_value_t = 4096)]
+        cdc_min: u32,
+        #[arg(long, default_value_t = 16384)]
+        cdc_avg: u32,
+        #[arg(long, default_value_t = 65536)]
+        cdc_max: u32,
     },
-    /// Rebuild files from an existing bitchain JSON file
-    Rebuild {
-        /// Bitchain JSON file to read
+
+    /// Retrieve and reconstruct the file(s) recorded under a manifest hash
+    /// (as printed by `pack`) into `output_path`.
+    Unpack {
+        /// Manifest content hash printed by `pack` (or a path to a
+        /// manifest JSON file).
+        hash: String,
+
+        /// Directory to reconstruct files into.
+        output_path: PathBuf,
+
+        /// Partition `hash` was packed into. Defaults to the same
+        /// "default" partition `pack` uses when `--partition` is omitted.
         #[arg(long)]
-        bitchain: PathBuf,
+        partition: Option<String>,
+    },
 
-        /// Output directory to reconstruct files into
+    /// Re-hash content and confirm determinism. With a hash, verifies just
+    /// that manifest; without one, verifies every manifest + pack in scope.
+    Verify {
+        /// Manifest hash to verify. Omit to verify everything in scope.
+        hash: Option<String>,
+
+        #[arg(long, default_value = DEFAULT_PARTITION)]
+        partition: String,
+
+        /// Verify every partition under the store root, not just one.
         #[arg(long)]
-        output_dir: PathBuf,
+        all: bool,
     },
-    /// Print a bitchain JSON file to stdout
-    Show {
-        /// Bitchain JSON file to show
-        file: PathBuf,
+
+    /// List what's stored locally. Omit `partition` to summarize every
+    /// partition under the store root.
+    Ls { partition: Option<String> },
+
+    /// Garbage-collect unreferenced content (mark-and-sweep). Omit
+    /// `partition` to consider every partition under the store root.
+    Gc {
+        partition: Option<String>,
+
+        /// Skip repacking a partition already at or above this
+        /// live/total percentage.
+        #[arg(long, default_value_t = DEFAULT_TARGET_UTILIZATION)]
+        target_utilization: f64,
     },
-    /// Validate a bitchain JSON file structure
-    Validate {
-        /// Bitchain JSON file to validate
-        file: PathBuf,
+
+    /// Replicate sealed pack(s) + manifests from `local_store` to `remote`.
+    /// See `src/cli/push.rs` for the local-vs-S3 scope note.
+    Push {
+        local_store: PathBuf,
+        remote: PathBuf,
+
+        /// Partition to push. Default: every partition in `local_store`.
+        #[arg(long)]
+        partition: Option<String>,
+
+        /// Specific pack ids (hex) to push. Default: all sealed packs.
+        #[arg(long)]
+        pack: Vec<String>,
     },
-    /// Print CLI help
-    Help,
+
+    /// Fetch sealed pack(s) + manifests from `remote` into `local_store`.
+    Pull {
+        remote: PathBuf,
+        local_store: PathBuf,
+
+        /// Partition to pull. Default: every partition `remote` has.
+        #[arg(long)]
+        partition: Option<String>,
+
+        /// Specific pack ids (hex) to pull. Default: all sealed packs.
+        #[arg(long)]
+        pack: Vec<String>,
+    },
 }
 
-#[derive(Debug, Serialize, Deserialize, Default)]
-struct Config {
-    aws: Option<AwsConfig>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct AwsConfig {
-    access_key_id: String,
-    secret_access_key: String,
-    session_token: Option<String>,
-    region: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct Bitchain {
-    version: String,
-    files: Vec<BitchainFile>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct BitchainFile {
-    path: String,
-    blocks: Vec<Block>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct Block {
-    hash: String,
-    uris: Vec<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct OldBitchain {
-    version: String,
-    blocks: Vec<Block>,
-}
-
-#[tokio::main]
-async fn main() {
-    let config_path = config_file_path();
+fn main() -> ExitCode {
     let cli = Cli::parse();
+    let store_root = cli.store.unwrap_or_else(cli::default_store_root);
 
-    if cli.setup_config {
-        if let Err(err) = setup_config(&config_path) {
-            eprintln!("Failed to setup config: {err}");
-            std::process::exit(1);
+    let result = run(cli.command, store_root);
+
+    match result {
+        Ok(true) => ExitCode::SUCCESS,
+        Ok(false) => ExitCode::FAILURE, // ran fine, but e.g. verify found a mismatch
+        Err(err) => {
+            eprintln!("bitchain: {err}");
+            ExitCode::FAILURE
         }
-        return;
     }
+}
 
-    let config = load_config(&config_path);
-    if let Some(c) = &config {
-        println!("Loaded config from {}", config_path.display());
-        println!("Current config: {:#?}", c);
-    } else if config_path.exists() {
-        eprintln!("Failed to load config from {}", config_path.display());
-    }
-
-    match cli.command.unwrap_or(Commands::Help) {
-        Commands::Help => {
-            let mut cmd = Cli::command();
-            cmd.print_help().expect("Failed to print help");
-            println!();
-        }
-        Commands::Ingest {
-            input,
-            output_dir,
-            block_size,
-            uri_base,
-            output,
-            dry_run,
+/// Returns `Ok(false)` (not an `Err`) for a clean run that nonetheless
+/// reports failure, e.g. `verify` finding a hash mismatch.
+fn run(command: Commands, store_root: PathBuf) -> bitchain::Result<bool> {
+    match command {
+        Commands::Pack {
+            path,
+            partition,
+            identity,
+            fixed_block_size,
+            cdc_min,
+            cdc_avg,
+            cdc_max,
         } => {
-            let output_file = output.unwrap_or_else(|| input.with_extension("bitchain.json"));
-            if let Err(err) = ingest_path(
-                &input,
-                block_size,
-                output_dir.as_deref(),
-                uri_base.as_deref(),
-                &output_file,
-                &config,
-                dry_run,
-            )
-            .await
-            {
-                eprintln!("Ingest failed: {err}");
-                std::process::exit(1);
-            }
+            let profile = match fixed_block_size {
+                Some(block_size) => ChunkingProfile::Fixed { block_size },
+                None => ChunkingProfile::FastCdc {
+                    min_size: cdc_min,
+                    avg_size: cdc_avg,
+                    max_size: cdc_max,
+                },
+            };
+            let hash = cli::pack::run(cli::pack::PackArgs {
+                input: path,
+                store_root,
+                partition,
+                identity,
+                profile,
+            })?;
+            println!("{hash}");
+            Ok(true)
         }
-        Commands::Rebuild {
-            bitchain,
-            output_dir,
+
+        Commands::Unpack {
+            hash,
+            output_path,
+            partition,
         } => {
-            if let Err(err) = rebuild_bitchain(&bitchain, &output_dir, &config).await {
-                eprintln!("Rebuild failed: {err}");
-                std::process::exit(1);
-            }
+            let restored = cli::unpack::run(cli::unpack::UnpackArgs {
+                manifest: hash,
+                store_root,
+                partition,
+                output_dir: output_path,
+            })?;
+            eprintln!("{restored} file(s) restored");
+            Ok(true)
         }
-        Commands::Show { file } => {
-            if let Err(err) = show_bitchain(&file) {
-                eprintln!("Show failed: {err}");
-                std::process::exit(1);
+
+        Commands::Verify {
+            hash,
+            partition,
+            all,
+        } => {
+            let report = cli::verify::run(cli::verify::VerifyArgs {
+                store_root,
+                hash,
+                partition,
+                all_partitions: all,
+            })?;
+            println!(
+                "manifests: {}/{} passed | entries checked: {} | pack entries checked: {}",
+                report.manifests_passed,
+                report.manifests_checked,
+                report.entries_checked,
+                report.pack_entries_checked
+            );
+            for failure in &report.failures {
+                println!("FAIL: {failure}");
             }
-        }
-        Commands::Validate { file } => {
-            if let Err(err) = validate_bitchain(&file) {
-                eprintln!("Validate failed: {err}");
-                std::process::exit(1);
-            }
-            println!("Bitchain is valid: {}", file.display());
-        }
-    }
-}
-
-fn config_file_path() -> PathBuf {
-    let home = env::var("HOME").expect("HOME environment variable is not set");
-    Path::new(&home).join(".bitchain").join("config")
-}
-
-fn load_config(config_path: &Path) -> Option<Config> {
-    if !config_path.exists() {
-        return None;
-    }
-
-    let contents = fs::read_to_string(config_path).ok()?;
-    serde_json::from_str(&contents).ok()
-}
-
-fn setup_config(config_path: &Path) -> io::Result<()> {
-    println!("Setting up config file at {}", config_path.display());
-
-    let mut config = Config::default();
-
-    if confirm("Would you like to add AWS credentials to the config? (y/N)")? {
-        let access_key_id = prompt("AWS Access Key ID")?;
-        let secret_access_key = prompt("AWS Secret Access Key")?;
-        let region = prompt("AWS Region (e.g., us-east-1)")?;
-
-        let session_token = if confirm("Do you have an AWS session token to add? (y/N)")? {
-            let token = prompt("AWS Session Token")?;
-            if token.is_empty() {
-                None
+            if report.passed() {
+                println!("PASS");
             } else {
-                Some(token)
+                println!("FAIL");
             }
-        } else {
-            None
-        };
-
-        config.aws = Some(AwsConfig {
-            access_key_id,
-            secret_access_key,
-            session_token,
-            region,
-        });
-    }
-
-    if let Some(parent) = config_path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-
-    let json = serde_json::to_string_pretty(&config).unwrap();
-    fs::write(config_path, json)?;
-
-    println!("Config saved to {}", config_path.display());
-    Ok(())
-}
-
-async fn ingest_path(
-    input_path: &Path,
-    block_size: usize,
-    output_dir: Option<&Path>,
-    uri_base: Option<&str>,
-    output_bitchain: &Path,
-    config: &Option<Config>,
-    dry_run: bool,
-) -> io::Result<()> {
-    if let Some(base) = uri_base {
-        if base.trim_start_matches(' ').starts_with("s3://")
-            && config.as_ref().and_then(|c| c.aws.as_ref()).is_none()
-        {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "S3 uri_base requires AWS credentials in config; run --setup-config and provide AWS credentials",
-            ));
-        }
-    }
-
-    let output_dir = output_dir
-        .map(PathBuf::from)
-        .unwrap_or_else(|| env::current_dir().expect("Failed to determine current directory"));
-    fs::create_dir_all(&output_dir)?;
-
-    let mut files = Vec::new();
-    if input_path.is_file() {
-        let relative_path = input_path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("output.bin")
-            .to_string();
-        files.push(
-            ingest_file_entry(
-                input_path,
-                &relative_path,
-                &output_dir,
-                block_size,
-                uri_base,
-                config,
-                dry_run,
-            )
-            .await?,
-        );
-    } else if input_path.is_dir() {
-        for entry in fs::read_dir(input_path)? {
-            let entry = entry?;
-            let path = entry.path();
-            if !path.is_file() {
-                continue;
-            }
-            let relative_path = path
-                .strip_prefix(input_path)
-                .unwrap_or(&path)
-                .to_string_lossy()
-                .to_string();
-            files.push(
-                ingest_file_entry(
-                    &path,
-                    &relative_path,
-                    &output_dir,
-                    block_size,
-                    uri_base,
-                    config,
-                    dry_run,
-                )
-                .await?,
-            );
-        }
-    } else {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "Input path must be a file or directory",
-        ));
-    }
-
-    let bitchain = Bitchain {
-        version: "1.0".to_string(),
-        files,
-    };
-
-    if dry_run {
-        println!(
-            "Dry run complete. Planned {} file(s) into {}.",
-            bitchain.files.len(),
-            output_bitchain.display()
-        );
-        return Ok(());
-    }
-
-    if let Some(parent) = output_bitchain.parent() {
-        fs::create_dir_all(parent)?;
-    }
-
-    let json = serde_json::to_string_pretty(&bitchain).unwrap();
-    fs::write(output_bitchain, json)?;
-    println!("Wrote bitchain to {}", output_bitchain.display());
-    Ok(())
-}
-
-async fn ingest_file_entry(
-    file_path: &Path,
-    relative_path: &str,
-    output_dir: &Path,
-    block_size: usize,
-    uri_base: Option<&str>,
-    config: &Option<Config>,
-    dry_run: bool,
-) -> io::Result<BitchainFile> {
-    let input_file = File::open(file_path)?;
-    let mut reader = BufReader::new(input_file);
-    let mut blocks = Vec::new();
-    let mut buffer = vec![0u8; block_size];
-
-    while let Ok(bytes_read) = reader.read(&mut buffer) {
-        if bytes_read == 0 {
-            break;
+            Ok(report.passed())
         }
 
-        let data = &buffer[..bytes_read];
-        let hash = format!("{:x}", Sha256::digest(data));
-        let mut uris = Vec::new();
-
-        if let Some(base) = uri_base {
-            let uri = format!(
-                "{}/{}/{}",
-                base.trim_end_matches('/'),
-                relative_path.trim_start_matches('/'),
-                hash
-            );
-            uris.push(uri.clone());
-
-            if uri.starts_with("s3://") {
-                if !dry_run {
-                    let aws_config = config
-                        .as_ref()
-                        .and_then(|c| c.aws.as_ref())
-                        .ok_or_else(|| io::Error::new(
-                            io::ErrorKind::InvalidInput,
-                            "S3 uri_base requires AWS credentials in config; run --setup-config and provide AWS credentials",
-                        ))?;
-                    upload_to_s3(&uri, data, aws_config).await.map_err(|err| {
-                        io::Error::other(format!("Failed to upload block {}: {}", uri, err))
-                    })?;
-                } else {
-                    println!("Dry run: would upload {}", uri);
-                }
-            } else if dry_run {
-                println!("Dry run: would create URI {}", uri);
-            }
-        } else {
-            let file_output_dir = output_dir.join(relative_path).with_extension("blocks");
-            fs::create_dir_all(&file_output_dir)?;
-            let block_path = file_output_dir.join(format!("{}.bin", hash));
-            if !dry_run {
-                fs::write(&block_path, data)?;
-            }
-            let uri = format!("file://{}", fs::canonicalize(&block_path)?.display());
-            uris.push(uri);
-        }
-
-        blocks.push(Block { hash, uris });
-    }
-
-    Ok(BitchainFile {
-        path: relative_path.to_string(),
-        blocks,
-    })
-}
-
-async fn rebuild_bitchain(
-    bitchain_path: &Path,
-    output_dir: &Path,
-    config: &Option<Config>,
-) -> io::Result<()> {
-    let bitchain = load_bitchain(bitchain_path)?;
-    fs::create_dir_all(output_dir)?;
-
-    for file_entry in &bitchain.files {
-        let reconstructed_path = output_dir.join(&file_entry.path);
-        if let Some(parent) = reconstructed_path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-
-        let mut output_file = File::create(&reconstructed_path)?;
-        for block in &file_entry.blocks {
-            let mut block_data = None;
-            for uri in &block.uris {
-                match download_object(uri, config).await {
-                    Ok(data) => {
-                        block_data = Some(data);
-                        break;
-                    }
-                    Err(err) => {
-                        eprintln!("Failed to download {}: {}", uri, err);
-                    }
-                }
-            }
-            let data = block_data.ok_or_else(|| {
-                io::Error::other(format!("All URIs failed for block {}", block.hash))
+        Commands::Ls { partition } => {
+            cli::ls::run(cli::ls::LsArgs {
+                store_root,
+                partition,
             })?;
-            output_file.write_all(&data)?;
+            Ok(true)
         }
-        println!("Rebuilt file {}", reconstructed_path.display());
-    }
 
-    Ok(())
-}
-
-async fn download_object(uri: &str, config: &Option<Config>) -> io::Result<Vec<u8>> {
-    if uri.starts_with("s3://") {
-        let aws_config = config
-            .as_ref()
-            .and_then(|c| c.aws.as_ref())
-            .ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "S3 download requires AWS credentials in config",
-                )
+        Commands::Gc {
+            partition,
+            target_utilization,
+        } => {
+            cli::gc::run(cli::gc::GcArgs {
+                store_root,
+                partition,
+                target_utilization,
             })?;
-        download_from_s3(uri, aws_config).await
-    } else if uri.starts_with("http://") || uri.starts_with("https://") {
-        download_http(uri).await
-    } else if uri.starts_with("file://") {
-        let local_path = uri.trim_start_matches("file://").to_string();
-        fs::read(local_path)
-    } else {
-        fs::read(uri)
-    }
-}
-
-async fn download_http(uri: &str) -> io::Result<Vec<u8>> {
-    let response = reqwest::get(uri)
-        .await
-        .map_err(|e| io::Error::other(format!("HTTP request failed: {}", e)))?;
-    let status = response.status();
-    let bytes = response
-        .bytes()
-        .await
-        .map_err(|e| io::Error::other(format!("HTTP body failed: {}", e)))?;
-    if !status.is_success() {
-        return Err(io::Error::other(format!(
-            "HTTP request returned status {}",
-            status
-        )));
-    }
-    Ok(bytes.to_vec())
-}
-
-async fn download_from_s3(uri: &str, aws_config: &AwsConfig) -> io::Result<Vec<u8>> {
-    let s3_uri = uri
-        .strip_prefix("s3://")
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "Invalid S3 URI"))?;
-    let parts: Vec<&str> = s3_uri.splitn(2, '/').collect();
-    if parts.len() != 2 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "Invalid S3 URI format",
-        ));
-    }
-    let bucket = parts[0];
-    let key = parts[1];
-
-    let shared_config = aws_config::defaults(BehaviorVersion::v2026_01_12())
-        .region(Region::new(aws_config.region.clone()))
-        .credentials_provider(Credentials::new(
-            &aws_config.access_key_id,
-            &aws_config.secret_access_key,
-            aws_config.session_token.clone(),
-            None,
-            "bitchain",
-        ))
-        .load()
-        .await;
-
-    let client = aws_sdk_s3::Client::new(&shared_config);
-    let resp = client
-        .get_object()
-        .bucket(bucket)
-        .key(key)
-        .send()
-        .await
-        .map_err(|e| io::Error::other(format!("S3 download error: {:?}", e)))?;
-
-    let data = resp
-        .body
-        .collect()
-        .await
-        .map_err(|e| io::Error::other(format!("S3 body read error: {:?}", e)))?;
-    Ok(data.into_bytes().to_vec())
-}
-
-async fn upload_to_s3(uri: &str, data: &[u8], aws_config: &AwsConfig) -> io::Result<()> {
-    let s3_uri = uri
-        .strip_prefix("s3://")
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "Invalid S3 URI"))?;
-    let parts: Vec<&str> = s3_uri.splitn(2, '/').collect();
-    if parts.len() != 2 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "Invalid S3 URI format",
-        ));
-    }
-    let bucket = parts[0];
-    let key = parts[1];
-
-    let shared_config = aws_config::defaults(BehaviorVersion::v2026_01_12())
-        .region(Region::new(aws_config.region.clone()))
-        .credentials_provider(Credentials::new(
-            &aws_config.access_key_id,
-            &aws_config.secret_access_key,
-            aws_config.session_token.clone(),
-            None,
-            "bitchain",
-        ))
-        .load()
-        .await;
-
-    let client = aws_sdk_s3::Client::new(&shared_config);
-    let body = ByteStream::from(data.to_vec());
-
-    client
-        .put_object()
-        .bucket(bucket)
-        .key(key)
-        .body(body)
-        .send()
-        .await
-        .map_err(|e| io::Error::other(format!("S3 upload error: {:?}", e)))?;
-
-    println!("Uploaded block to {}", uri);
-    Ok(())
-}
-
-fn show_bitchain(file: &Path) -> io::Result<()> {
-    let bitchain = load_bitchain(file)?;
-    let json = serde_json::to_string_pretty(&bitchain).unwrap();
-    println!("{}", json);
-    Ok(())
-}
-
-fn validate_bitchain(file: &Path) -> io::Result<()> {
-    let bitchain = load_bitchain(file)?;
-    if bitchain.files.is_empty() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "Bitchain contains no files",
-        ));
-    }
-    for file_entry in &bitchain.files {
-        if file_entry.path.is_empty() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "Bitchain file entry has no path",
-            ));
+            Ok(true)
         }
-        if file_entry.blocks.is_empty() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("File {} contains no blocks", file_entry.path),
-            ));
+
+        Commands::Push {
+            local_store,
+            remote,
+            partition,
+            pack,
+        } => {
+            cli::push::run(cli::push::PushArgs {
+                store_root: local_store,
+                partition,
+                to: remote,
+                pack_ids: pack,
+            })?;
+            Ok(true)
         }
-        for block in &file_entry.blocks {
-            if block.uris.is_empty() {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!("Block {} has no URIs", block.hash),
-                ));
-            }
+
+        Commands::Pull {
+            remote,
+            local_store,
+            partition,
+            pack,
+        } => {
+            cli::pull::run(cli::pull::PullArgs {
+                store_root: local_store,
+                partition,
+                from: remote,
+                pack_ids: pack,
+            })?;
+            Ok(true)
         }
     }
-    Ok(())
-}
-
-fn load_bitchain(file: &Path) -> io::Result<Bitchain> {
-    let contents = fs::read_to_string(file)?;
-    let raw_value: serde_json::Value = serde_json::from_str(&contents).map_err(|err| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("Failed to parse bitchain JSON: {err}"),
-        )
-    })?;
-
-    if raw_value.get("files").is_some() {
-        let bitchain: Bitchain = serde_json::from_value(raw_value).map_err(|err| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("Failed to parse new-style bitchain JSON: {err}"),
-            )
-        })?;
-        Ok(bitchain)
-    } else if raw_value.get("blocks").is_some() {
-        let old_bitchain: OldBitchain = serde_json::from_value(raw_value).map_err(|err| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("Failed to parse old-style bitchain JSON: {err}"),
-            )
-        })?;
-        let path = file
-            .file_stem()
-            .and_then(|stem| stem.to_str())
-            .unwrap_or("restored.bin")
-            .to_string();
-        Ok(Bitchain {
-            version: old_bitchain.version,
-            files: vec![BitchainFile {
-                path,
-                blocks: old_bitchain.blocks,
-            }],
-        })
-    } else {
-        Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "Unsupported bitchain schema: missing files or blocks",
-        ))
-    }
-}
-
-fn confirm(prompt_text: &str) -> io::Result<bool> {
-    let answer = prompt(prompt_text)?;
-    let normalized = answer.trim().to_lowercase();
-    Ok(normalized == "y" || normalized == "yes")
-}
-
-fn prompt(field: &str) -> io::Result<String> {
-    print!("{}: ", field);
-    io::stdout().flush()?;
-
-    let mut input = String::new();
-    io::stdin().read_line(&mut input)?;
-    Ok(input.trim().to_owned())
 }

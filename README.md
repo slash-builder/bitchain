@@ -1,41 +1,51 @@
 # bitchain — Storage Kit
 
 A **content-addressed binary storage toolkit** — library + CLI for Rust.
+Format v2 (current, shipped): BLAKE3 addressing, FastCDC + fixed-size
+hybrid chunking, Zstd-compressed packfiles, `(hash, context)` addressing,
+partition isolation, recursive fragmentation. See `docs/concepts.md` for
+the full engineering picture and `AGENT.md` for the repo's agent context.
 
-Split files into immutable SHA-256 blocks, store them locally or on any HTTP(S)/S3 backend, and reconstruct them on demand. Works offline; backends are optional.
-Perfect for file archival, distributed sharing, device storage, or any system that needs deduplication and integrity verification without a central server.
+Split files into immutable, content-addressed fragments, store them
+locally (networked backends are `storage-kit`'s job), and reconstruct
+them on demand. Works fully offline; every command in this CLI runs
+against nothing but the local filesystem — see `docs/cli-reference.md`.
+Perfect for file archival, distributed sharing, device storage, or any
+system that needs deduplication and integrity verification without a
+central server.
+
+> **Format history:** this README described a retired v1 format (SHA-256
+> hashing, fixed-1MB blocks, a flat `files[].blocks[]` JSON manifest, an
+> `ingest`/`rebuild`/`show`/`validate` command surface) until 2026-08-23,
+> when the crate was rewritten to format v2 end to end. There is no
+> `--legacy` read path for v1 manifests in this crate — see
+> `docs/manifest-format.md`'s "Versioning" section.
 
 ## Features
 
-- **Ingest files** into JSON manifests with content-addressed SHA-256 blocks
-- **Local-first storage** — blocks stored locally by default; no server required
-- **Pluggable backends** — local filesystem, S3, HTTP(S), or Refraction API
-- **Deduplication** — identical blocks across files share storage automatically
-- **Offline reconstruction** — rebuild files from local cache even if backends are down
-- **Dry-run validation** — simulate ingestion without writing data
-- **Schema validation** — JSON Schema conformance checks
-- **Stable manifest format** — JSON serialization for tooling and portability
+- **Content-addressed fragmentation** — BLAKE3 hashing, FastCDC or
+  fixed-size chunking (`docs/concepts.md`)
+- **Local-first storage** — every command works with zero server, zero
+  account; networked backends are optional and live in `storage-kit`
+- **Deduplication** — identical content across files shares one physical
+  copy automatically, confirmed by test and by manual verification
+- **Partition isolation** — one physical storage boundary per household/
+  namespace; GC and dedup never cross it
+- **Integrity verification** — `verify` re-derives every sealed pack's
+  trailer hash and re-checks every entry
+- **Stable manifest format (v2)** — JSON, documented field-by-field in
+  `docs/manifest-format.md` and schema-validated by `bitchain-schema.json`
 
-## How It Works
+## Documentation
 
-```mermaid
-graph LR
-    A["📁 Input File(s)"] -->|Ingest| B["🔗 Split into Blocks"]
-    B -->|SHA-256 Hash| C["🔐 Content-Addressed Blocks"]
-    C -->|Upload| D["☁️ Block Storage"]
-    D -->|S3, HTTP, File| E["📝 Bitchain Manifest"]
-    E -->|Rebuild| F["📁 Reconstruct Files"]
-    
-    style A fill:#e1f5ff
-    style B fill:#fff9c4
-    style C fill:#f3e5f5
-    style D fill:#c8e6c9
-    style E fill:#ffe0b2
-    style F fill:#e1f5ff
-```
-
-Each file is split into fixed-size blocks (default 1MB), hashed with SHA-256, and stored at URIs.
-The bitchain manifest records file paths and block URIs, enabling lossless reconstruction from any available block source.
+- **`docs/concepts.md`** — core engineering concepts: content addressing,
+  determinism, dedup, partitions, why packfiles
+- **`docs/manifest-format.md`** — the v2 manifest schema, field by field
+- **`docs/cli-reference.md`** — every command, its real flags, and a real
+  transcript of a full round trip
+- **`docs/integration-quickring.md`** — the integration boundary between
+  bitchain and Quickring Courier (`bitchain-sys`), scoped, not designed
+- **`AGENT.md`** — full agent/contributor context for this repo
 
 ## Install
 
@@ -65,174 +75,46 @@ make all      # build + lint + test
 make run      # Run with arguments
 ```
 
-## Configuration
-
-Create or update the config file with:
-
-```bash
-cargo run -- --setup-config
-```
-
-This writes JSON to `~/.bitchain/config`.
-If you choose AWS credentials, the CLI will prompt for:
-
-- AWS Access Key ID
-- AWS Secret Access Key
-- AWS Region
-- optional AWS Session Token
-
 ## Commands
 
-### `ingest`
-
-Ingest a file or directory and create a bitchain manifest.
-
-```bash
-cargo run -- ingest --input path/to/file.iso --uri-base s3://bucket/prefix --output file.bitchain.json
-```
-
-For directory ingestion:
+Full reference with real flags, real output, and error semantics for
+every command: **[`docs/cli-reference.md`](docs/cli-reference.md)**.
+Summary:
 
 ```bash
-cargo run -- ingest --input ./data --uri-base s3://bucket/prefix --output data.bitchain.json
+bitchain pack    --input <path> --partition <string> [--identity <s>] [--output <path>] [--fixed-block-size <n> | --cdc-min/--cdc-avg/--cdc-max]
+bitchain unpack  --manifest <path> --output-dir <path>
+bitchain verify  --partition <string>
+bitchain ls      --partition <string>
+bitchain gc      --partition <string>
+bitchain push    --partition <string> --to <path> [--pack <hex-id>]...
+bitchain pull    --partition <string> --from <path> [--pack <hex-id>]...
 ```
 
-If `--uri-base` is not provided, ingest writes blocks locally and uses `file://` URIs.
+`--store <path>` (default `~/.bitchain/store`) is a global flag on every
+command. There is no `--setup-config` / `~/.bitchain/config` step and no
+AWS-credential prompt in the current CLI — `push`/`pull` are local-
+filesystem-to-local-filesystem only; see `docs/cli-reference.md` for the
+networked-backend scope note.
 
-Optional flags:
+## Manifest format
 
-- `--output-dir <dir>`: local directory for block files when `--uri-base` is not set
-- `--block-size <bytes>`: bytes per block (default `1048576`)
-- `--dry-run`: simulate ingest without writing files or uploading
+Full field-by-field reference: **[`docs/manifest-format.md`](docs/manifest-format.md)**.
+Formal schema: **[`bitchain-schema.json`](bitchain-schema.json)** (JSON
+Schema draft-07, format v2 — BLAKE3 hashes, `(hash, context)` addressing,
+`leaf`/`list` root types, tagged-union chunking profile). There is no v1
+(SHA-256, flat `files[].blocks[]`) manifest support in this crate.
 
-### `rebuild`
+## Core concepts
 
-Rebuild files from an existing bitchain JSON manifest.
+Content addressing, determinism, dedup, partition isolation, and why
+packfiles: **[`docs/concepts.md`](docs/concepts.md)**.
 
-```bash
-cargo run -- rebuild --bitchain file.bitchain.json --output-dir restored
-```
+## Quickring integration
 
-This reconstructs each `files[].path` entry under the output directory.
-It tries each block URI in order and uses the first successful download.
-
-### `show`
-
-Print a bitchain manifest to stdout.
-
-```bash
-cargo run -- show file.bitchain.json
-```
-
-### `validate`
-
-Validate the manifest structure.
-
-```bash
-cargo run -- validate file.bitchain.json
-```
-
-### `Help`
-
-Print CLI help:
-
-```bash
-cargo run -- help
-```
-
-## JSON Format
-
-Bitchain manifests use the following JSON schema:
-
-```json
-{
-  "version": "1.0",
-  "files": [
-    {
-      "path": "relative/path/to/file.txt",
-      "blocks": [
-        {
-          "hash": "<sha256-hash-of-block>",
-          "uris": [
-            "s3://bucket/prefix/relative/path/to/file.txt/<hash>",
-            "https://example.com/blocks/<hash>.bin"
-          ]
-        }
-      ]
-    }
-  ]
-}
-```
-
-### Field definitions
-
-- `version`: manifest version string
-- `files`: array of file entries
-- `files[].path`: original file path preserved from ingest
-- `files[].blocks`: ordered block list for the file
-- `blocks[].hash`: SHA-256 hash of block bytes
-- `blocks[].uris`: candidate URIs for the block
-
-### JSON Schema
-
-For formal validation, see [bitchain-schema.json](bitchain-schema.json).
-The schema uses JSON Schema draft-07 and validates both the modern multi-file format and legacy single-file format.
-
-## Standalone Examples
-
-### Archive a large file locally
-
-```bash
-# Ingest a file and store blocks in ./blocks/
-cargo run -- ingest --input ./large-dataset.tar.gz --output-dir ./blocks --output dataset.bitchain.json
-
-# Later, rebuild it
-cargo run -- rebuild --bitchain dataset.bitchain.json --output-dir ./restored
-ls ./restored/large-dataset.tar.gz
-```
-
-### Dry-run without writing
-
-```bash
-# Preview the split and block structure
-cargo run -- ingest --input ./firmware.bin --dry-run
-```
-
-### Push blocks to S3
-
-```bash
-# Upload blocks to S3 as you ingest
-cargo run -- ingest --input ./os-image.iso --uri-base s3://my-bucket/archives --output image.bitchain.json
-
-# The manifest contains S3 URIs; rebuild from S3 later
-cargo run -- rebuild --bitchain image.bitchain.json --output-dir ./restored
-```
-
-### Hybrid storage (local + S3 fallback)
-
-```bash
-# Ingest to local storage with S3 as a fallback URI
-cargo run -- ingest --input ./media/ --output-dir ./local-cache --uri-base s3://backup-bucket --output media.bitchain.json
-
-# Rebuild tries local-cache first, then S3
-cargo run -- rebuild --bitchain media.bitchain.json --output-dir ./restored
-```
-
-### Library use (Rust)
-
-```rust
-use bitchain::ingest;
-
-// Programmatic API — embed Storage Kit in your own app
-let manifest = ingest("path/to/file.bin", "./blocks", None).await?;
-println!("{}", serde_json::to_string_pretty(&manifest)?);
-```
-
-### Validate a manifest before use
-
-```bash
-cargo run -- validate archive.bitchain.json
-```
+The (not-yet-built) boundary between this Kit and Quickring Courier's
+`bitchain-sys` binding — partition-as-household, context-as-file-identity,
+open questions and their owners: **[`docs/integration-quickring.md`](docs/integration-quickring.md)**.
 
 <!-- LS-UNIFORM:START -->
 
@@ -240,12 +122,17 @@ cargo run -- validate archive.bitchain.json
 
 | Path | What it is |
 |------|-----------|
-| `src/main.rs` | CLI entry point — clap command dispatch, config loading. |
-| `src/lib.rs` | **Public library API** — core types (`Block`, `Manifest`, `Store` trait), `ingest()` and `rebuild()` functions. Use this for embedding in other Rust projects. |
-| `src/block.rs` | Block splitting, SHA-256 hashing, size calculations. |
-| `src/manifest.rs` | Manifest serialization, schema validation. |
-| `src/store/` | Backend implementations (`local.rs`, `s3.rs`, `http.rs`). Swap backends without changing caller code. |
-| `bitchain-schema.json` | JSON Schema (draft-07) for manifest validation and tooling. |
+| `src/main.rs` | CLI entry point — clap command dispatch, dispatches to `src/cli/`. |
+| `src/lib.rs` | **Public library API** — re-exports `addressing`, `error`, `fragment`, `gc`, `manifest`, `store`. Use this for embedding in other Rust projects; the CLI is a thin client over it. |
+| `src/addressing.rs` | `Hash` (BLAKE3), `Context`, `PartitionId`, `Address` — the `(hash, context)` addressing primitives. |
+| `src/fragment.rs` | Chunking (`ChunkingProfile`) + the leaf/list-node recursive fragment tree. |
+| `src/manifest.rs` | The v2 `Manifest`/`ManifestEntry` shape — see `docs/manifest-format.md`. |
+| `src/gc.rs` | Mark-and-sweep GC, partition-scoped. |
+| `src/store/mod.rs` | `PartitionStore` — the reference local-filesystem `ImmutableStore` implementation. |
+| `src/store/packfile.rs` | On-disk packfile layout (header/entry/trailer), Zstd compression, index read/write/rebuild. |
+| `src/cli/` | One module per subcommand (`pack.rs`, `unpack.rs`, `verify.rs`, `ls.rs`, `gc.rs`, `push.rs`, `pull.rs`, `transfer.rs`), each built entirely on the public `bitchain` library API. |
+| `bitchain-schema.json` | JSON Schema (draft-07) for the v2 manifest format. |
+| `docs/` | CLUS-20 spec: `concepts.md`, `manifest-format.md`, `cli-reference.md`, `integration-quickring.md`. |
 
 ## Build & CI
 
@@ -258,10 +145,15 @@ cargo run -- validate archive.bitchain.json
 ## Links
 
 - **Agent guide:** [`AGENT.md`](./AGENT.md) — full context for contributors
-- **Business unit:** Developer Tools (clusterzer0)
-- **Jira:** `CLUS` (fairmerce.atlassian.net)
-- **Specification:** bitchain manifest format and block protocol (language-neutral reference)
-- **Consumers:** Refraction (managed server), Quickring Courier (file sharing), Thunderhead (on-device storage)
+- **GitHub org:** `slash-builder` (moved from `clusterzer0` 2026-08-22/23 —
+  bitchain is stewarded by SlashBuilder, the studio's OSS org, as an open
+  protocol + reference tooling; `storage-kit`, the library layer bitchain
+  is meant to consume, has **not** moved and stays at `clusterzer0/storage-kit`
+  — see `AGENT.md`'s "Repo home" and "Open work" sections for the current
+  cross-org dependency status)
+- **Jira:** `CLUS` (fairmerce.atlassian.net) — project key unaffected by the GitHub org move
+- **Specification:** [`docs/concepts.md`](docs/concepts.md), [`docs/manifest-format.md`](docs/manifest-format.md), [`docs/cli-reference.md`](docs/cli-reference.md) (CLUS-20)
+- **Consumers:** Refraction (managed server), Quickring Courier (file sharing, integration boundary sketched in [`docs/integration-quickring.md`](docs/integration-quickring.md)), Thunderhead (on-device storage)
 
 ## License
 

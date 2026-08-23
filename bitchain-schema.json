@@ -1,171 +1,137 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "https://github.com/dlockamy/bitchain/releases/schema/v1.0",
-  "title": "Bitchain Manifest",
-  "description": "A content-addressed block manifest for distributing and reconstructing files across multiple storage backends.",
+  "$id": "https://github.com/slash-builder/bitchain/releases/schema/v2",
+  "title": "Bitchain Manifest (format v2)",
+  "description": "Content-addressed fragment-tree manifest produced by `bitchain pack` and consumed by `bitchain unpack`. See docs/manifest-format.md for the full field-by-field writeup this schema mirrors — kept in lockstep by hand with src/manifest.rs per that file's own module doc comment; there is no schema-to-Rust codegen in this repo.",
   "type": "object",
-  "oneOf": [
-    {
-      "$ref": "#/definitions/bitchainV1"
+  "required": ["format_version", "partition_id", "entries"],
+  "additionalProperties": false,
+  "properties": {
+    "format_version": {
+      "type": "integer",
+      "enum": [2],
+      "description": "Manifest format version. Always 2 for this schema. `Manifest::from_json` rejects any other value; there is no v1 (SHA-256 / flat block list) read path in this crate."
     },
-    {
-      "$ref": "#/definitions/bitchainLegacy"
+    "partition_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{32}$",
+      "description": "16-byte partition id, hex-encoded (32 hex chars). Canonically BLAKE3(household/namespace-string)[0:16]."
+    },
+    "entries": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/manifestEntry" }
     }
-  ],
+  },
   "definitions": {
-    "bitchainV1": {
-      "title": "Bitchain Manifest (v1.0)",
-      "description": "Modern multi-file bitchain manifest format.",
-      "type": "object",
-      "required": [
-        "version",
-        "files"
-      ],
-      "properties": {
-        "version": {
-          "type": "string",
-          "enum": [
-            "1.0"
-          ],
-          "description": "Schema version. Must be '1.0' for this format."
-        },
-        "files": {
-          "type": "array",
-          "description": "Array of file entries in the bitchain.",
-          "minItems": 1,
-          "items": {
-            "$ref": "#/definitions/bitchainFile"
-          }
-        }
-      },
-      "additionalProperties": false
-    },
-    "bitchainLegacy": {
-      "title": "Bitchain Manifest (Legacy)",
-      "description": "Legacy single-file bitchain format. Supported for backwards compatibility. When rebuilt, mapped to a single files[0] entry.",
-      "type": "object",
-      "required": [
-        "version",
-        "blocks"
-      ],
-      "properties": {
-        "version": {
-          "type": "string",
-          "enum": [
-            "1.0"
-          ],
-          "description": "Schema version."
-        },
-        "blocks": {
-          "type": "array",
-          "description": "Array of block entries (legacy format).",
-          "minItems": 1,
-          "items": {
-            "$ref": "#/definitions/block"
-          }
-        }
-      },
-      "additionalProperties": false
-    },
-    "bitchainFile": {
-      "title": "File Entry",
-      "description": "A single file in the bitchain, with its relative path and block list.",
+    "manifestEntry": {
       "type": "object",
       "required": [
         "path",
-        "blocks"
+        "context",
+        "root_hash",
+        "root_type",
+        "depth",
+        "uncompressed_len",
+        "chunking_profile"
       ],
+      "additionalProperties": false,
       "properties": {
         "path": {
           "type": "string",
-          "description": "Relative or absolute file path as it was when ingested. Used as the target path during rebuild.",
-          "minLength": 1
+          "minLength": 1,
+          "description": "Relative path as packed; used as the target path under --output-dir on unpack."
         },
-        "blocks": {
-          "type": "array",
-          "description": "Ordered list of blocks comprising this file.",
-          "minItems": 1,
-          "items": {
-            "$ref": "#/definitions/block"
-          }
-        }
-      },
-      "additionalProperties": false
-    },
-    "block": {
-      "title": "Block",
-      "description": "A content-addressed block with SHA-256 hash and one or more candidate URIs.",
-      "type": "object",
-      "required": [
-        "hash",
-        "uris"
-      ],
-      "properties": {
-        "hash": {
+        "context": {
           "type": "string",
-          "description": "SHA-256 hash of the block bytes in hexadecimal format.",
-          "pattern": "^[a-f0-9]{64}$"
+          "pattern": "^[0-9a-f]{32}$",
+          "description": "16-byte logical identity, hex-encoded. All-zero (ANONYMOUS) unless `pack --identity` was supplied."
         },
-        "uris": {
-          "type": "array",
-          "description": "Ordered list of candidate URIs for retrieving this block. Supports file://, http://, https://, and s3:// schemes.",
-          "minItems": 1,
-          "items": {
-            "type": "string",
-            "format": "uri",
-            "description": "URI pointing to the block data. Tried in order until one succeeds."
-          }
+        "root_hash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "description": "BLAKE3 hash (32 bytes, hex-encoded) of the fragment tree's root block."
+        },
+        "root_type": {
+          "type": "string",
+          "enum": ["leaf", "list"],
+          "description": "leaf: content fit in one chunk, no fold levels. list: one or more list-node fold levels sit above the leaves."
+        },
+        "depth": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of list-node levels above the leaves. Not part of the object's address; fully determined by chunking_profile + input length, carried for reconstruction convenience."
+        },
+        "uncompressed_len": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Total byte length of the original content. unpack checks the reconstructed length against this field and fails on mismatch."
+        },
+        "chunking_profile": {
+          "oneOf": [
+            { "$ref": "#/definitions/chunkingProfileFixed" },
+            { "$ref": "#/definitions/chunkingProfileFastCdc" }
+          ]
         }
-      },
-      "additionalProperties": false
+      }
+    },
+    "chunkingProfileFixed": {
+      "type": "object",
+      "required": ["codec", "block_size"],
+      "additionalProperties": false,
+      "properties": {
+        "codec": { "const": "fixed" },
+        "block_size": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Every chunk is block_size bytes except possibly the last."
+        }
+      }
+    },
+    "chunkingProfileFastCdc": {
+      "type": "object",
+      "required": ["codec", "min_size", "avg_size", "max_size"],
+      "additionalProperties": false,
+      "properties": {
+        "codec": { "const": "fast_cdc" },
+        "min_size": { "type": "integer", "minimum": 1 },
+        "avg_size": { "type": "integer", "minimum": 1 },
+        "max_size": { "type": "integer", "minimum": 1 }
+      }
     }
   },
   "examples": [
     {
-      "version": "1.0",
-      "files": [
+      "format_version": 2,
+      "partition_id": "7aed631198158a211b8778bdb2267829",
+      "entries": [
         {
-          "path": "archive.tar.gz",
-          "blocks": [
-            {
-              "hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-              "uris": [
-                "s3://my-bucket/blocks/archive.tar.gz/e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-                "https://cdn.example.com/blocks/e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-              ]
-            },
-            {
-              "hash": "ca761857eb0f94b8e1aec8924a29fc4d57c27d16b4844a79eefbe4d46f6e1eb0",
-              "uris": [
-                "s3://my-bucket/blocks/archive.tar.gz/ca761857eb0f94b8e1aec8924a29fc4d57c27d16b4844a79eefbe4d46f6e1eb0"
-              ]
-            }
-          ]
+          "path": "a.txt",
+          "context": "0c1b1bc9896253c19131abb26e3b1342",
+          "root_hash": "88ddc1dfe8016046c29f23a44b25501c1125d64b51718ce4aa3eb8276b9d6ebc",
+          "root_type": "leaf",
+          "depth": 0,
+          "uncompressed_len": 54,
+          "chunking_profile": {
+            "codec": "fast_cdc",
+            "min_size": 4096,
+            "avg_size": 16384,
+            "max_size": 65536
+          }
         },
         {
-          "path": "images/photo.jpg",
-          "blocks": [
-            {
-              "hash": "abc123def456abc123def456abc123def456abc123def456abc123def456abc1",
-              "uris": [
-                "file:///blocks/abc123def456abc123def456abc123def456abc123def456abc123def456abc1.bin",
-                "https://backup.example.com/photo/abc123def456abc123def456abc123def456abc123def456abc123def456abc1"
-              ]
-            }
-          ]
-        }
-      ]
-    },
-    {
-      "version": "1.0",
-      "blocks": [
-        {
-          "hash": "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
-          "uris": [
-            "file:///tmp/deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef.bin"
-          ]
+          "path": "b.bin",
+          "context": "1abefd54a6fcf896b10dbf2bc14c301e",
+          "root_hash": "0affc52bc586a62530b22d20d1e6f98afd4297fe9db9aed28f3441c2eefe2e28",
+          "root_type": "list",
+          "depth": 1,
+          "uncompressed_len": 200000,
+          "chunking_profile": {
+            "codec": "fixed",
+            "block_size": 1048576
+          }
         }
       ]
     }
-  ]
+  ],
+  "x-schema-history": "This schema described the retired v1 format (SHA-256 hashes, flat files[].blocks[] list, version: \"1.0\" string) until 2026-08-23, when it was rewritten to match the shipped format-v2 Manifest/ManifestEntry shape in src/manifest.rs as part of CLUS-20. No v1 manifest validates against this schema; there is no --legacy read path in the CLI either (see docs/manifest-format.md)."
 }

@@ -5,7 +5,7 @@ authors = ["Douglas Lockamy <dlockamy@lockamystudios.com>"]
 edition = "2021"
 description = "A lightweight virtual filesystem that uses the internet as block storage"
 repository = "https://github.com/dlockamy/bitchain"
-license = "MIT"
+license = "Apache-2.0"
 keywords = ["binary", "versioning", "content-addressed", "s3", "cli"]
 categories = ["command-line-utilities", "filesystem"]
 

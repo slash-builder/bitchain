@@ -1,20 +1,20 @@
-# bitchain
+# bitchain — Storage Kit
 
-A lightweight **virtual filesystem** that uses the internet as block storage.
+A **content-addressed binary storage toolkit** — library + CLI for Rust.
 
-`bitchain` is a Rust CLI for managing content-addressed binary chains.
-It breaks files into immutable SHA-256 blocks, distributes them across HTTP, HTTPS, S3, or local storage, and reconstructs them on demand.
-Perfect for versioning large files, distributing datasets, or building decentralized storage systems.
+Split files into immutable SHA-256 blocks, store them locally or on any HTTP(S)/S3 backend, and reconstruct them on demand. Works offline; backends are optional.
+Perfect for file archival, distributed sharing, device storage, or any system that needs deduplication and integrity verification without a central server.
 
 ## Features
 
-- Ingest a single file or directory into a JSON-based bitchain manifest
-- Support local file URIs, HTTP(S) URIs, and S3 block URIs
-- Upload blocks to S3 when `--uri-base` uses `s3://`
-- Dry-run ingesting without writing data
-- Rebuild files from a bitchain manifest
-- Validate bitchain JSON structure
-- Backwards-compatible old-style bitchain format support
+- **Ingest files** into JSON manifests with content-addressed SHA-256 blocks
+- **Local-first storage** — blocks stored locally by default; no server required
+- **Pluggable backends** — local filesystem, S3, HTTP(S), or Refraction API
+- **Deduplication** — identical blocks across files share storage automatically
+- **Offline reconstruction** — rebuild files from local cache even if backends are down
+- **Dry-run validation** — simulate ingestion without writing data
+- **Schema validation** — JSON Schema conformance checks
+- **Stable manifest format** — JSON serialization for tooling and portability
 
 ## How It Works
 
@@ -178,40 +178,74 @@ Bitchain manifests use the following JSON schema:
 For formal validation, see [bitchain-schema.json](bitchain-schema.json).
 The schema uses JSON Schema draft-07 and validates both the modern multi-file format and legacy single-file format.
 
-## Examples
+## Standalone Examples
 
-Run a dry-run of a directory ingest:
+### Archive a large file locally
 
 ```bash
-cargo run -- ingest --input ./docs --uri-base s3://alpha.softsurve.com --dry-run
+# Ingest a file and store blocks in ./blocks/
+cargo run -- ingest --input ./large-dataset.tar.gz --output-dir ./blocks --output dataset.bitchain.json
+
+# Later, rebuild it
+cargo run -- rebuild --bitchain dataset.bitchain.json --output-dir ./restored
+ls ./restored/large-dataset.tar.gz
 ```
 
-Ingest a file locally and produce a manifest:
+### Dry-run without writing
 
 ```bash
-cargo run -- ingest --input ./image.iso --output-dir ./blocks --output image.bitchain.json
+# Preview the split and block structure
+cargo run -- ingest --input ./firmware.bin --dry-run
 ```
 
-Rebuild from a manifest:
+### Push blocks to S3
 
 ```bash
+# Upload blocks to S3 as you ingest
+cargo run -- ingest --input ./os-image.iso --uri-base s3://my-bucket/archives --output image.bitchain.json
+
+# The manifest contains S3 URIs; rebuild from S3 later
 cargo run -- rebuild --bitchain image.bitchain.json --output-dir ./restored
 ```
 
-Validate a manifest:
+### Hybrid storage (local + S3 fallback)
 
 ```bash
-cargo run -- validate image.bitchain.json
+# Ingest to local storage with S3 as a fallback URI
+cargo run -- ingest --input ./media/ --output-dir ./local-cache --uri-base s3://backup-bucket --output media.bitchain.json
+
+# Rebuild tries local-cache first, then S3
+cargo run -- rebuild --bitchain media.bitchain.json --output-dir ./restored
+```
+
+### Library use (Rust)
+
+```rust
+use bitchain::ingest;
+
+// Programmatic API — embed Storage Kit in your own app
+let manifest = ingest("path/to/file.bin", "./blocks", None).await?;
+println!("{}", serde_json::to_string_pretty(&manifest)?);
+```
+
+### Validate a manifest before use
+
+```bash
+cargo run -- validate archive.bitchain.json
 ```
 
 <!-- LS-UNIFORM:START -->
 
-## Subprojects
+## Storage Kit Structure
 
 | Path | What it is |
 |------|-----------|
-| `src/` | Rust source — `main.rs` (CLI entry point), `lib.rs` (Storage Kit library API), content-addressing and block-store modules. |
-| `bitchain-schema.json` | JSON schema for bitchain manifests / block metadata. |
+| `src/main.rs` | CLI entry point — clap command dispatch, config loading. |
+| `src/lib.rs` | **Public library API** — core types (`Block`, `Manifest`, `Store` trait), `ingest()` and `rebuild()` functions. Use this for embedding in other Rust projects. |
+| `src/block.rs` | Block splitting, SHA-256 hashing, size calculations. |
+| `src/manifest.rs` | Manifest serialization, schema validation. |
+| `src/store/` | Backend implementations (`local.rs`, `s3.rs`, `http.rs`). Swap backends without changing caller code. |
+| `bitchain-schema.json` | JSON Schema (draft-07) for manifest validation and tooling. |
 
 ## Build & CI
 
@@ -223,11 +257,11 @@ cargo run -- validate image.bitchain.json
 
 ## Links
 
-- Agent guide: [`AGENT.md`](./AGENT.md)
-- Workspace index: [`../../WORKSPACE.md`](../../WORKSPACE.md)
-- **Business unit:** Developer Tools
-- **Jira:** `CLUS`
-- **Related:** Storage Kit (`clusterzer0/storage-kit`) · Refraction · Quickring Courier
+- **Agent guide:** [`AGENT.md`](./AGENT.md) — full context for contributors
+- **Business unit:** Developer Tools (clusterzer0)
+- **Jira:** `CLUS` (fairmerce.atlassian.net)
+- **Specification:** bitchain manifest format and block protocol (language-neutral reference)
+- **Consumers:** Refraction (managed server), Quickring Courier (file sharing), Thunderhead (on-device storage)
 
 ## License
 

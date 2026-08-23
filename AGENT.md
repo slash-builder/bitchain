@@ -134,12 +134,22 @@ user accounts or authentication (Refraction's job).
   `src/cli/` (`pack.rs`, `unpack.rs`, `verify.rs`, `ls.rs`, `gc.rs`,
   `push.rs`, `pull.rs`, `transfer.rs`, `mod.rs`) are all present, and
   `src/main.rs` now declares `mod cli;` and dispatches every subcommand
-  through it. Verified independently (technical-writer, CLUS-20 pass,
-  2026-08-23): `cargo build` succeeds, `cargo test` passes 22/22, and a
-  live `pack` → `ls` → `verify` → `unpack` → `gc` → `push` → `pull` →
-  `unpack` round trip against real files produced byte-identical output
-  at every restore. Full detail and every command's real transcript:
-  `docs/cli-reference.md`, `docs/concepts.md`, `docs/manifest-format.md`.
+  through it. Verified independently (software-developer, CLUS-20 pass,
+  2026-08-23): `cargo build`/`cargo fmt --check`/`cargo clippy
+  --all-targets` are all clean, `cargo test` passes 23/23, and a live
+  `pack` → `ls` → `verify` → `unpack` → `gc` → `push` → `pull` → `unpack`
+  round trip against real files (including a >1-chunk 5 MB file, forcing
+  a list-node level, and a directory with a deduplicated file pair)
+  produced byte-identical output at every restore, plus a corruption test
+  (flip one byte in a sealed pack) that `verify` correctly caught and
+  exited non-zero on. That same pass also fixed a real bug in `verify`'s
+  entry check (it compared a raw content hash against a multi-chunk
+  entry's list-node root hash — a type mismatch that always failed
+  depth>0 entries even on a byte-correct reconstruction) and fixed
+  several CLI modules that had regressed to an earlier arg shape
+  (`gc`/`unpack`/`push`/`transfer`) after a same-day concurrent edit.
+  Full detail and every command's real transcript: `docs/cli-reference.md`,
+  `docs/concepts.md`, `docs/manifest-format.md`.
   **Superseded note, kept for provenance, not deleted:** "Rewrite is in
   progress and, as of this writing, the crate does not compile.
   `Cargo.toml` was updated to the v2 dependency set (`blake3`, `zstd`,

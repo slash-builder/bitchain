@@ -3,7 +3,7 @@ name = "bitchain"
 version = "0.2.0"
 authors = ["Douglas Lockamy <dlockamy@lockamystudios.com>"]
 edition = "2021"
-description = "Content-addressed binary storage Kit — format v2: BLAKE3 addressing, recursive fragmentation, Zstd-compressed packfiles, per-partition dedup"
+description = "Content-addressed binary storage CLI — format v2 reference client over storage-kit's engine (BLAKE3 addressing, recursive fragmentation, Zstd-compressed packfiles, per-partition dedup), plus the manifest protocol and GC"
 repository = "https://github.com/slash-builder/bitchain"
 license = "Apache-2.0"
 keywords = ["binary", "content-addressed", "packfile", "blake3", "storage"]
@@ -18,14 +18,19 @@ name = "bitchain"
 path = "src/main.rs"
 
 [dependencies]
-blake3 = "1"
-zstd = "0.13"
-fastcdc = "3"
+# The v2 storage engine (addressing, fragment, store/packfile) relocated to
+# storage-kit 2026-08-23 (data-architect's ruling, CLUS-21: a location
+# defect, not a shape defect); build-confirmed green 2026-08-25. This crate
+# is now a thin CLI + manifest protocol layer over it. Both are same-org
+# siblings under slash-builder now.
+# NOTE (devops): the path dep only resolves for local dev (sibling checkout);
+# Jenkins does a single-repo container checkout, so CI must consume storage-kit
+# from the Nexus `lockamy` registry, not this path. Migrate before relying on CI.
+storage-kit = { path = "../storage-kit", version = "2.0" }
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = "1.0"
-hex = "0.4"
 walkdir = "2"
 
 [dev-dependencies]

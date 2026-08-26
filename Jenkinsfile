@@ -4,7 +4,14 @@
 def RUST_IMAGE = 'rust:1.94'
 
 pipeline {
-  agent any
+  // Pin to the Docker-capable Linux build host. `agent any` can land on
+  // a node with no `docker` CLI at all (confirmed live 2026-08-26 across
+  // several kit repos: the first real CI run failed with "docker: not
+  // found" before any `docker { image ... }` stage agent ever got a
+  // chance to run) -- same fix already applied in quickring/gateway,
+  // quickring/hub, and slash-builder/substrate-kit's own Jenkinsfiles
+  // for the identical reason.
+  agent { label 'linux-build' }
 
   environment {
     NEXUS_URL  = 'https://nexus.softsurve.com'

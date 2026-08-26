@@ -8,6 +8,17 @@ repository = "https://github.com/slash-builder/bitchain"
 license = "Apache-2.0"
 keywords = ["binary", "content-addressed", "packfile", "blake3", "storage"]
 categories = ["command-line-utilities", "filesystem"]
+# CLUS-42: this repo's Jenkinsfile sets CARGO_HOME=$WORKSPACE/.cargo and
+# writes real Nexus credentials there for the publish step, then runs
+# `cargo publish --allow-dirty` from that same directory -- which
+# suppresses cargo's own "untracked files in the package root" warning.
+# Without this exclude, .cargo/credentials.toml (and the downloaded
+# registry cache) would ship inside the published crate, exactly as
+# confirmed live in slash-builder/storage-kit 0.1.1 on Nexus. See that
+# repo's fix/exclude-cargo-dir-from-package PR for the full incident.
+# .cargo/config.toml itself (the Nexus registry index pointer,
+# intentionally git-tracked, no secret) stays included.
+exclude = [".cargo/credentials.toml", ".cargo/registry/", ".cargo/.package-cache", ".cargo/.package-cache-mutate", ".cargo/.global-cache"]
 
 [lib]
 name = "bitchain"

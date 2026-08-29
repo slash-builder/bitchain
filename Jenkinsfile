@@ -106,8 +106,28 @@ pipeline {
             fi
 
             # Cargo registry auth.
+            #
+            # Only append [registries.lockamy] here if this repo does not
+            # ALSO git-track it in .cargo/config.toml (the pattern a repo
+            # needs the moment it *consumes* another lockamy-registry crate,
+            # not just publishes one -- see CLUS-62). If it ever gains that
+            # tracked file, re-appending the same key here duplicates it and
+            # cargo publish fails with a TOML parse error before reaching
+            # Nexus. Same bug found and fixed identically in identity-kit,
+            # storage-kit, and fabric-kit, 2026-08-29 -- fixed here
+            # proactively before this repo hits it too.
             mkdir -p "$CARGO_HOME"
-            cat >> "$CARGO_HOME/config.toml" <<EOF
+            if [ -f .cargo/config.toml ] && grep -q '^\[registries.lockamy\]' .cargo/config.toml; then
+              cat >> "$CARGO_HOME/config.toml" <<EOF
+
+[registries.lockamy-hosted]
+index = "sparse+${NEXUS_URL}/repository/cargo-hosted/"
+
+[registry]
+default = "lockamy"
+EOF
+            else
+              cat >> "$CARGO_HOME/config.toml" <<EOF
 [registries.lockamy]
 index = "sparse+${NEXUS_URL}/repository/cargo-group/"
 
@@ -117,6 +137,7 @@ index = "sparse+${NEXUS_URL}/repository/cargo-hosted/"
 [registry]
 default = "lockamy"
 EOF
+            fi
             # Nexus speaks HTTP Basic; cargo sends the token verbatim as the Authorization header,
             # so the token must be "Basic <base64(user:pass)>" — not a bare user:pass.
             BASIC="Basic $(printf '%s:%s' "${NEXUS_USER}" "${NEXUS_PASS}" | base64 -w0)"

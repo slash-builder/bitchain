@@ -117,7 +117,7 @@ pipeline {
             # storage-kit, and fabric-kit, 2026-08-29 -- fixed here
             # proactively before this repo hits it too.
             mkdir -p "$CARGO_HOME"
-            if [ -f .cargo/config.toml ] && grep -q '^\[registries.lockamy\]' .cargo/config.toml; then
+            if [ -f .cargo/config.toml ] && grep -qF '[registries.lockamy]' .cargo/config.toml; then
               cat >> "$CARGO_HOME/config.toml" <<EOF
 
 [registries.lockamy-hosted]

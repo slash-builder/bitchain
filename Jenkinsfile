@@ -15,7 +15,17 @@ pipeline {
 
   environment {
     NEXUS_URL  = 'https://nexus.softsurve.com'
-    CARGO_HOME = "${WORKSPACE}/.cargo"
+    // RELATIVE on purpose -- do not restore `"${WORKSPACE}/.cargo"`.
+    // That interpolates ONCE against the top-level agent's workspace, but
+    // docker stages bind-mount only their own workspace, and under
+    // concurrency Jenkins allocates `<job>@2`. The baked path then names a
+    // directory not mounted in the container, and cargo dies with
+    // "Read-only file system (os error 30)". Root-caused on message-kit
+    // PR-14 builds 3/4, 2026-09-12.
+    //
+    // Cargo resolves a relative CARGO_HOME against cwd, and no step in this
+    // file uses `cd`, so every cargo invocation shares one `.cargo`.
+    CARGO_HOME = '.cargo'
   }
 
   stages {
@@ -107,9 +117,15 @@ pipeline {
 
             # Cargo registry auth.
             mkdir -p "$CARGO_HOME"
+            # [registries.lockamy] is deliberately NOT re-appended here: it is
+            # git-tracked in .cargo/config.toml so the Build & Test stage can
+            # resolve storage-kit without publish credentials, and CARGO_HOME
+            # IS that directory. Appending it again duplicates a key TOML
+            # already has, and `cargo publish` then fails outright with
+            # "duplicate key" before it ever reaches Nexus. (Identical latent
+            # bug found and fixed the same way in storage-kit's and
+            # identity-kit's Publish stages.)
             cat >> "$CARGO_HOME/config.toml" <<EOF
-[registries.lockamy]
-index = "sparse+${NEXUS_URL}/repository/cargo-group/"
 
 [registries.lockamy-hosted]
 index = "sparse+${NEXUS_URL}/repository/cargo-hosted/"

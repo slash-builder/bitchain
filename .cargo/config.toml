@@ -1,0 +1,14 @@
+# Git-tracked on purpose (the CLUS-42/22 pattern, same as storage-kit's own
+# .cargo/config.toml): `cargo build` / `cargo test` must be able to RESOLVE
+# storage-kit from the Nexus `lockamy` registry without publish credentials.
+#
+# The Jenkinsfile's Publish stage supplies credentials separately, into
+# credentials.toml. This file carries the index pointer only -- no secrets.
+#
+# Note CARGO_HOME is '.cargo' (relative, see the Jenkinsfile), so THIS file
+# is the CARGO_HOME config at build time. The Publish stage therefore must
+# NOT re-append [registries.lockamy] -- that would duplicate a key TOML
+# already has and `cargo publish` fails with "duplicate key" before it ever
+# reaches Nexus.
+[registries.lockamy]
+index = "sparse+https://nexus.softsurve.com/repository/cargo-group/"

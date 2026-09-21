@@ -6,12 +6,18 @@
 //! (CLUS-20); see `AGENT.md` for the full engineering contract and
 //! `bitchain-schema.json` for the manifest wire format.
 //!
-//! Layering:
+//! Layering. The storage ENGINE lives in `storage-kit` and is re-exported
+//! here, not reimplemented — that relocation is CLUS-21 (data-architect's
+//! ruling: a location defect, not a shape defect). This crate is the thin
+//! protocol + CLI layer over it.
+//!
+//! Re-exported from `storage-kit`:
 //! - [`addressing`] — `Hash`, `Context`, `PartitionId`, `Address`
 //! - [`fragment`] — chunking + the leaf/list-node recursive tree
-//! - [`store`] — the `ImmutableStore`/`ReadBlock`/`WriteBlock` traits and
-//!   the reference local-filesystem packfile implementation
-//!   ([`store::PartitionStore`])
+//! - [`store`] — the `ImmutableStore` trait and the reference
+//!   local-filesystem packfile implementation ([`store::PartitionStore`])
+//!
+//! Owned by this crate:
 //! - [`manifest`] — the v2 manifest format
 //! - [`gc`] — mark-and-sweep, partition-scoped
 //!
@@ -23,19 +29,37 @@
 //! `--legacy` v1 read path is deferred (explicit blocking constraint from
 //! CLUS-20), not silently unsupported by omission.
 
-pub mod addressing;
-pub mod error;
-pub mod fragment;
+// The engine modules are storage-kit's, re-exported under their original
+// paths so `crate::addressing::…` etc. keep resolving. Until 2026-09-21 this
+// crate carried its own drifted COPIES of these files; they referenced
+// blake3/fastcdc/hex/zstd, which this crate does not declare, so the lib had
+// stopped compiling entirely (14 × E0433).
+pub use storage_kit::{addressing, fragment, store};
+
+/// Error type, re-exported from `storage-kit`.
+///
+/// `StorageError` there is the union of this crate's old `BitchainError` and
+/// storage-kit's own backend-facing error, merged when the engine relocated
+/// (CLUS-21). `BitchainError` is kept as an alias so existing callers and
+/// downstream users don't break; the only variant that changed name is
+/// `Remote(String)` → `Backend(String)`, which had no callers here.
+pub mod error {
+    pub use storage_kit::error::{Result, StorageError, StorageError as BitchainError};
+}
+
 pub mod gc;
 pub mod manifest;
-pub mod store;
 
 pub use addressing::{Address, Context, Hash, PartitionId};
 pub use error::{BitchainError, Result};
 pub use fragment::{ChunkingProfile, FragmentTree, RootType};
 pub use gc::GcReport;
 pub use manifest::{Manifest, ManifestEntry};
-pub use store::{ImmutableStore, PartitionStore, ReadBlock, WriteBlock};
+// `ReadBlock`/`WriteBlock` are deliberately NOT re-exported: storage-kit
+// collapsed both into the single `ImmutableStore` trait -- same methods,
+// same signatures, same implementors, no behavior change (its own
+// store/mod.rs documents the collapse).
+pub use store::{ImmutableStore, PartitionStore};
 
 /// Storage format version this crate implements. See `manifest::FORMAT_VERSION`
 /// and `store::packfile::FORMAT_VERSION` for the same constant scoped to each

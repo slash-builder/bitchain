@@ -18,7 +18,10 @@ use crate::addressing::{Hash, PartitionId};
 use crate::error::Result;
 use crate::fragment::walk_hashes;
 use crate::manifest::Manifest;
-use crate::store::{PartitionStore, ReadBlock, WriteBlock};
+// `ImmutableStore` replaces the old `ReadBlock`/`WriteBlock` pair (collapsed
+// in storage-kit, no behavior change); it is imported to bring get/has/put
+// into scope for the `PartitionStore` calls below.
+use crate::store::{ImmutableStore, PartitionStore};
 use std::collections::HashSet;
 use std::fs;
 use std::path::Path;

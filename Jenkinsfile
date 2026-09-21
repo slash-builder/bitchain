@@ -117,9 +117,15 @@ pipeline {
 
             # Cargo registry auth.
             mkdir -p "$CARGO_HOME"
+            # [registries.lockamy] is deliberately NOT re-appended here: it is
+            # git-tracked in .cargo/config.toml so the Build & Test stage can
+            # resolve storage-kit without publish credentials, and CARGO_HOME
+            # IS that directory. Appending it again duplicates a key TOML
+            # already has, and `cargo publish` then fails outright with
+            # "duplicate key" before it ever reaches Nexus. (Identical latent
+            # bug found and fixed the same way in storage-kit's and
+            # identity-kit's Publish stages.)
             cat >> "$CARGO_HOME/config.toml" <<EOF
-[registries.lockamy]
-index = "sparse+${NEXUS_URL}/repository/cargo-group/"
 
 [registries.lockamy-hosted]
 index = "sparse+${NEXUS_URL}/repository/cargo-hosted/"

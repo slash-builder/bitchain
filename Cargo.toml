@@ -34,10 +34,19 @@ path = "src/main.rs"
 # defect, not a shape defect); build-confirmed green 2026-08-25. This crate
 # is now a thin CLI + manifest protocol layer over it. Both are same-org
 # siblings under slash-builder now.
-# NOTE (devops): the path dep only resolves for local dev (sibling checkout);
-# Jenkins does a single-repo container checkout, so CI must consume storage-kit
-# from the Nexus `lockamy` registry, not this path. Migrate before relying on CI.
-storage-kit = { path = "../storage-kit", version = "2.0" }
+# Consumed from the Nexus `lockamy` registry, NOT a path. The migration the
+# old NOTE here called for is done: storage-kit 2.0.0 was published to Nexus
+# 2026-09-21 (it had never been -- the registry held only 0.1.0-0.1.3, so
+# `version = "2.0"` had nothing to resolve to and the path dep was the only
+# thing making this crate build at all).
+#
+# Do not reintroduce `path = "../storage-kit"`. Jenkins does a single-repo
+# container checkout with no sibling, so a path dep fails resolution outright:
+#   failed to load source for dependency `storage-kit`
+#   ... /storage-kit/Cargo.toml: No such file or directory
+# For local dev against an unpublished storage-kit, use a `[patch]` in
+# .cargo/config.toml rather than editing this line.
+storage-kit = { version = "2.0", registry = "lockamy" }
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

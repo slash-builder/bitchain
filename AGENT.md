@@ -9,9 +9,11 @@ You are working on **bitchain** — the reference CLI product built on
 created by Douglas Lockamy (DJ) at Lockamy Studios.
 
 **Content-addressed determinism is the core invariant** — the same bytes in
-the same context resolve to the same address, and stored data is immutable
+the same partition resolve to the same address, and stored data is immutable
 once written. Local-first, offline-first design. Never suggest changes that
-compromise either invariant.
+compromise either invariant. **Correction, 2026-09-23** (see "Addressing"
+below): the address is `(partition_id, content_id)`, not `(hash, context)` —
+`context` is a property of a manifest reference, not of the address itself.
 
 ---
 
@@ -21,10 +23,23 @@ bitchain now lives at **`github.com/slash-builder/bitchain`** — transferred
 out of `clusterzer0` as part of the SlashBuilder OSS-org restructuring.
 SlashBuilder is the studio's open-source organization (peer to Hearth and
 BenixOS); bitchain is stewarded there as an open protocol + reference
-tooling. **`storage-kit` did not move** — it remains at
-`clusterzer0/storage-kit` (the developer-tools BU). bitchain (SlashBuilder)
-depending on storage-kit (clusterzer0) is a deliberate cross-org dependency,
-not a mistake — see "Open work" below for why this needs active tracking.
+tooling. **Correction, 2026-09-23: `storage-kit` did move, and the
+"remains at `clusterzer0/storage-kit`" claim below is stale.** The
+`clusterzer0` org was dissolved 2026-08-23 — both repos are `slash-builder`
+siblings now (`github.com/slash-builder/storage-kit`; confirmed by that
+repo's own `Cargo.toml` `repository` field and by this crate's `Cargo.toml`
+dependency comment: "Both are same-org siblings under slash-builder now").
+This is no longer a cross-org dependency requiring active tracking for the
+reason stated below — that reason no longer applies, though the Nexus
+registry dependency itself (`storage-kit = { version = "2.0", registry =
+"lockamy" }`) is unaffected and still real.
+<details><summary>Original claim, kept for provenance, not deleted</summary>
+
+"`storage-kit` did not move — it remains at `clusterzer0/storage-kit` (the
+developer-tools BU). bitchain (SlashBuilder) depending on storage-kit
+(clusterzer0) is a deliberate cross-org dependency, not a mistake — see
+'Open work' below for why this needs active tracking."
+</details>
 
 License: **Apache-2.0** (confirmed correct in `Cargo.toml` as of the
 2026-08-23 repositioning commit — the prior `MIT` mismatch is resolved).
@@ -62,9 +77,30 @@ primitive:
 | Chunking | **FastCDC + fixed-size hybrid** — content-defined by default, fixed-size where canonical addressing matters; application chooses per content type |
 | Compression | **Zstd** (hash is of *uncompressed* content — dedup survives compression choice) |
 | On-disk format | **Packfile** — append-only files holding many fragments, mmappable index, fanned out across the filesystem |
-| Addressing | **`(hash, context)`** — 32-byte BLAKE3 hash + 16-byte opaque context; the address is a pair, not a bare digest |
+| Addressing | **`(partition_id, content_id)`** — the storage engine's whole address, 16-byte partition id + 32-byte BLAKE3 content id; `storage-kit` deduplicates on `content_id` alone and knows nothing of logical identity |
 | Access boundary | **Partitions** — 16-byte opaque identifier; storage subsystem enforces per-partition isolation |
 | Large-file handling | **Recursive fragmentation** — an oversized fragment list is itself fragmented as a content-addressed object, flagged as a list, fetched lazily |
+
+**Superseded, 2026-09-23: `(hash, context)` addressing.** The 2026-06 lock
+named `(hash, context)` as the format's addressing pillar — 32-byte BLAKE3
+hash + 16-byte opaque context, "the address is a pair, not a bare digest."
+Two independent rulings retire that at the engine layer and amend the lock,
+not overturn it:
+
+- `wiki/decisions/storage-addressing-hash-context-ruling-2026-09-23.md` (data-architect)
+- `wiki/decisions/storage-addressing-hash-context-ruling-security-2026-09-23.md` (security-engineer)
+
+Both read the lock's own clause — "same bytes, different contexts = same
+payload deduplicated under one hash but distinct identities" — as *requiring*
+hash-only (now partition-scoped, keyed) dedup, not merely tolerating it.
+`Context` was never keyed into `ImmutableStore`; it is a property of a
+**reference**, not of a stored object, and `bitchain`'s own
+`ManifestEntry { path, context, root_hash }` is where it has always actually
+lived (see `src/context.rs`, which now owns the type). Do not resurrect a
+`context`/`Address` composite key in `storage-kit` on the strength of the
+old table row above — it is superseded, and re-adding it would violate the
+lock's dedup clause and reopen a cross-partition correlator the rulings both
+name explicitly (§3.1/§2.1 of the two documents above).
 
 **Do not describe this as "SHA-256 immutability."** That framing is
 superseded. The invariant that actually holds is content-addressed
@@ -181,6 +217,23 @@ user accounts or authentication (Refraction's job).
   `docs/cli-reference.md`/`docs/manifest-format.md` (CLUS-20) document the
   code at its current, pre-relocation location. Re-verify those docs'
   file-path references once this executes.
+  **DONE as of 2026-09-21 (correction, 2026-09-23 — the "not done" note
+  above and the "RESOLVED 2026-08-23" bullet's `src/store/` listing are both
+  stale).** `src/lib.rs`'s own header now reads: "the storage ENGINE lives
+  in `storage-kit` and is re-exported here, not reimplemented" and "[u]ntil
+  2026-09-21 this crate carried its own drifted COPIES of these files."
+  Verified directly against the tree on this branch: `src/addressing.rs`,
+  `src/fragment.rs`, and `src/store/` **do not exist in this crate**;
+  `Cargo.toml` pulls `storage-kit = { version = "2.0", registry = "lockamy"
+  }` from Nexus, and `bitchain::{addressing, fragment, store}` are
+  `pub use storage_kit::{...}` re-exports. **`src/store/` is not bitchain's
+  own** — do not describe it as such in future doc passes; this crate now
+  owns only `src/manifest.rs`, `src/gc.rs`, `src/context.rs` (new,
+  2026-09-23 — see below), and `src/cli/`. `docs/concepts.md`,
+  `docs/cli-reference.md`, and `docs/manifest-format.md` still describe the
+  pre-relocation file layout in places and are not corrected by this pass —
+  flagged, not fixed, since doc-path cleanup here is out of this change's
+  scope.
   <details><summary>Original open question, kept for provenance</summary>
 
   Architecture question, not yet answered: does bitchain depend on
@@ -197,6 +250,20 @@ user accounts or authentication (Refraction's job).
   more v2 code lands in either repo, or CLUS-21 (monorepo + lib/cli
   split) silently regresses into a fork.
   </details>
+- **`Context` retired from `storage-kit`, owned by `bitchain` (2026-09-23).**
+  Two independent rulings — see the "Addressing" correction above — retire
+  `Context`/`Address` from the storage engine and move the logical-identity
+  half of the 2026-06 lock down to the reference layer, where
+  `ManifestEntry` already carried it. `src/context.rs` (new) is now the
+  canonical `Context` type: same derivation
+  (`BLAKE3(logical-identity-string)[0:16]`), same representation, same
+  `ANONYMOUS` sentinel, moved down the dependency edge rather than
+  reimplemented differently. `storage-kit`'s own internal `Context`/`Address`
+  (used by `FragmentTree::root`, always `ANONYMOUS` for fragmentation
+  internal nodes) are **not yet removed from `storage-kit` itself** — that
+  is additive, in-scope-for-a-later-PR work on `storage-kit`, not this repo.
+  The JSON manifest schema (`bitchain-schema.json`) is unchanged; existing
+  manifests still verify.
 - **Backwards-compat (legacy manifest read) — escalated to DJ.** See above.
 - **Local git remote hygiene:** confirm any local clone or CI credential
   still pointing at `clusterzer0/bitchain.git` is updated —
@@ -223,10 +290,13 @@ Full CI/deploy stack (Jenkins → Nexus) unchanged by the org move; see
 
 ## Related work
 
-- **`clusterzer0/storage-kit`** — the library layer bitchain is meant to
-  consume (cross-org dependency; see "Open work" above).
+- **`slash-builder/storage-kit`** — the library layer bitchain consumes
+  (same-org sibling since the `clusterzer0` org dissolution, 2026-08-23; see
+  the "Repo home" correction above — this was `clusterzer0/storage-kit`).
 - **`clusterzer0/refraction`** — self-hosted/managed storage backend
-  consuming the same storage primitives.
+  consuming the same storage primitives. (Not independently verified by this
+  pass — only `storage-kit`'s location was confirmed against its own
+  `Cargo.toml`. If `refraction` also moved, this line is stale too.)
 - **Quickring Courier / QR-16** — out-of-band file sharing; the Rust
   binding (`bitchain-sys`) is gated on storage-kit's trait shape
   stabilizing, not on bitchain CLI completeness.
@@ -254,13 +324,17 @@ key is unaffected by the GitHub org move.)
 
 ## Key invariants
 
-1. **Content-addressed determinism** — same bytes + same context → same
+1. **Content-addressed determinism** — same bytes + same partition → same
    address; stored data is immutable once written. BLAKE3 is this version's
-   hash function, not a constitutional choice.
+   hash function, not a constitutional choice. **Correction, 2026-09-23:**
+   the address is `(partition_id, content_id)`, not `(hash, context)` — see
+   "Addressing" above. `context` is a property of the manifest reference
+   that names an object, not of the object's storage address.
 2. **Offline-first** — works without internet; every backend beyond local
    filesystem is optional.
 3. **Reusable library** — the CLI is a thin reference client over a stable
-   lib API (pending the storage-kit dependency resolution above).
+   lib API. (The storage-kit dependency resolution this line used to say was
+   "pending" is done — see the CLUS-21 correction under "Open work" above.)
 4. **Specification-first** — the manifest/address format is language-neutral;
    Rust is the reference implementation.
 5. **Local-first is a gate, not a preference** — no command may require a

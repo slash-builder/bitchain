@@ -10,10 +10,16 @@
 //! regardless of how `depth` is spelled, since `depth` is fully determined
 //! by the chunking profile and input length.
 //!
+//! `context` is a [`crate::context::Context`] — bitchain's own type, per the
+//! 2026-09-23 storage-addressing rulings (see `src/context.rs` module docs).
+//! It is a property of this reference, not of the stored object `root_hash`
+//! points at; `storage-kit`'s engine has no notion of it.
+//!
 //! `bitchain-schema.json` is the JSON Schema for this shape; keep the two
 //! in lockstep by hand — there is no schema-to-Rust codegen in this repo.
 
-use crate::addressing::{Context, Hash, PartitionId};
+use crate::addressing::{Hash, PartitionId};
+use crate::context::Context;
 use crate::error::{BitchainError, Result};
 use crate::fragment::{ChunkingProfile, RootType};
 use serde::{Deserialize, Serialize};
@@ -123,6 +129,41 @@ mod tests {
     fn rejects_non_v2_format_version() {
         let json = r#"{"format_version":1,"partition_id":"00","entries":[]}"#;
         assert!(Manifest::from_json(json).is_err());
+    }
+
+    /// There is no `tests/fixtures/*.json` directory or dedicated sample
+    /// manifest file in this repo (verified: only `bitchain-schema.json`
+    /// itself ships an on-disk manifest shape, under its own `examples`
+    /// key). This test uses that checked-in example — the closest thing to
+    /// an existing fixture — as a stand-in: it is real JSON that predates
+    /// this change and was written against `storage_kit::addressing::Context`
+    /// re-exported as `crate::Context`. If moving `Context` into this crate
+    /// changed derivation, representation, or the JSON shape in any way,
+    /// this manifest would stop parsing or its `context` field would stop
+    /// decoding — it does neither.
+    #[test]
+    fn existing_schema_example_manifest_still_verifies() {
+        let schema: serde_json::Value =
+            serde_json::from_str(include_str!("../bitchain-schema.json")).unwrap();
+        let example = &schema["examples"][0];
+        let json = serde_json::to_string(example).unwrap();
+
+        let manifest = Manifest::from_json(&json)
+            .expect("pre-existing schema example manifest must still parse under the new Context");
+        assert_eq!(manifest.entries.len(), 2);
+
+        for entry in &manifest.entries {
+            // Byte-for-byte: the context field on disk still decodes as a
+            // valid 16-byte Context through the type now owned by bitchain.
+            let ctx = entry.context().expect("context must still decode");
+            assert_eq!(ctx.to_hex(), entry.context);
+        }
+
+        // Round-trip: re-serializing must reproduce the same manifest shape
+        // (modulo key order, which JSON equality below ignores).
+        let round_tripped: serde_json::Value =
+            serde_json::from_str(&manifest.to_json_pretty().unwrap()).unwrap();
+        assert_eq!(&round_tripped, example);
     }
 
     #[test]

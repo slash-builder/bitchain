@@ -52,6 +52,13 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = "1.0"
 walkdir = "2"
+# `Context` (src/context.rs) is now owned here rather than re-exported from
+# storage-kit (2026-09-23 storage-addressing rulings; see that module's doc
+# comment). blake3/hex were already pulled in transitively via storage-kit;
+# these are the same versions storage-kit itself pins, made direct because
+# this crate now derives and hex-encodes a Context itself.
+blake3 = "1"
+hex = "0.4"
 
 [dev-dependencies]
 tempfile = "3"

@@ -37,8 +37,15 @@ enum Commands {
         #[arg(long, default_value = DEFAULT_PARTITION)]
         partition: String,
 
-        /// Logical identity for the whole pack. Defaults to
-        /// `Context::ANONYMOUS` (identity is content).
+        /// Logical identity for the whole pack, recorded in the manifest
+        /// entry's `context` field. Defaults to `Context::ANONYMOUS`
+        /// (identity is content). This labels the manifest reference only --
+        /// it does NOT affect storage, addressing, or dedup. Two `pack`
+        /// invocations of identical bytes under different `--identity`
+        /// values still share one physical stored entry; that is correct
+        /// and intentional, per the 2026-06 storage lock's dedup clause
+        /// ("same bytes, different contexts = same payload deduplicated
+        /// under one hash but distinct identities").
         #[arg(long)]
         identity: Option<String>,
 

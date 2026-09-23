@@ -10,7 +10,11 @@ pub struct PackArgs {
     pub input: PathBuf,
     pub store_root: PathBuf,
     pub partition: String,
-    /// Logical identity for the whole pack; `Context::ANONYMOUS` if unset.
+    /// Logical identity for the whole pack, written to the manifest entry's
+    /// `context` field only; `Context::ANONYMOUS` if unset. This is a
+    /// reference-layer label, not a storage key -- it deliberately has no
+    /// effect on addressing or dedup. See `Commands::Pack::identity`'s help
+    /// text in `main.rs` for the full rationale.
     pub identity: Option<String>,
     pub profile: ChunkingProfile,
 }

@@ -48,6 +48,17 @@ pub fn collect(store_root: &Path, partition_id: PartitionId) -> Result<GcReport>
         fs::remove_dir_all(&staging_root)?;
     }
     fs::create_dir_all(&staging_root)?;
+    // v3 split "create" from "open": `PartitionStore::open` no longer
+    // provisions a partition on first use (spec §3.7), and `create` needs a
+    // `Subject` to re-derive `partition_id` from — which GC does not have
+    // and structurally cannot reconstruct for an arbitrary partition it is
+    // asked to collect. `copy_partition_record` is the provisioning path
+    // that requires no `Subject`: it carries the *real* partition's own
+    // record (retention_class, encryption_mode, key state) into the
+    // staging store verbatim, so the swapped-in result is provisioned
+    // under the same terms as the partition GC is replacing rather than
+    // under some reconstructed default.
+    storage_kit::copy_partition_record(store_root, &staging_root, partition_id)?;
     {
         let mut staged = PartitionStore::open(&staging_root, partition_id)?;
         for hash in &live {
@@ -136,27 +147,56 @@ fn swap_in_staged_partition(real_root: &Path, staged_root: &Path) -> Result<()> 
 mod tests {
     use super::*;
     use crate::fragment::{build_fragment_tree, ChunkingProfile};
+    use std::path::Path;
+    use storage_kit::{EncryptionMode, PartitionSpec, RetentionClass, Subject, SubjectKind};
     use tempfile::tempdir;
+
+    /// Provision a fresh partition for `namespace` and open it.
+    ///
+    /// v3 split `create` from `open` (spec §3.7): `open` no longer
+    /// provisions on first use, and `create` requires a `Subject` whose
+    /// domain-prefixed derivation matches `partition_id` (`verify_derivation`
+    /// in storage-kit's `partition.rs`), which a bare `PartitionId::derive`
+    /// cannot supply. GC itself never provisions a fresh partition — it only
+    /// ever collects one `pack`/CLI usage already created (see `collect`'s
+    /// own `copy_partition_record` for how *its* staging store is
+    /// provisioned without a `Subject`) — so this constructor is test-only
+    /// scaffolding standing in for that upstream provisioning step, not
+    /// something GC's own code needs.
+    fn create_test_partition(store_root: &Path, namespace: &str) -> (PartitionId, PartitionStore) {
+        let partition_id = PartitionId::for_service(namespace);
+        let spec = PartitionSpec {
+            subject: Subject {
+                kind: SubjectKind::Service,
+                id: namespace.to_string(),
+            },
+            retention_class: RetentionClass::Standard,
+            encryption_mode: EncryptionMode::Plaintext,
+            label: None,
+        };
+        let store = PartitionStore::create(store_root, partition_id, spec).unwrap();
+        (partition_id, store)
+    }
 
     #[test]
     fn gc_reclaims_unreferenced_content_and_keeps_referenced_content() {
         let dir = tempdir().unwrap();
-        let partition_id = PartitionId::derive("gc-test");
 
-        let (kept_root, kept_depth, manifest_path);
+        let (kept_root, kept_depth, manifest_path, partition_id);
         {
-            let mut store = PartitionStore::open(dir.path(), partition_id).unwrap();
+            let (id, mut store) = create_test_partition(dir.path(), "gc-test");
+            partition_id = id;
             let profile = ChunkingProfile::Fixed { block_size: 4096 };
 
             // Referenced by a manifest — must survive GC.
             let kept = build_fragment_tree(b"keep me alive", &profile, &mut store).unwrap();
-            kept_root = kept.root.hash;
+            kept_root = kept.root;
             kept_depth = kept.depth;
 
             let mut manifest = Manifest::new(partition_id);
             manifest.entries.push(crate::manifest::ManifestEntry {
                 path: "kept.txt".into(),
-                context: crate::addressing::Context::ANONYMOUS.to_hex(),
+                context: crate::context::Context::ANONYMOUS.to_hex(),
                 root_hash: kept_root.to_hex(),
                 root_type: kept.root_type,
                 depth: kept.depth,
@@ -190,19 +230,19 @@ mod tests {
     #[test]
     fn gc_in_one_partition_never_touches_another() {
         let dir = tempdir().unwrap();
-        let partition_a = PartitionId::derive("gc-isolation-a");
-        let partition_b = PartitionId::derive("gc-isolation-b");
 
-        let hash_b;
+        let (partition_a, partition_b, hash_b);
         {
-            let mut store_b = PartitionStore::open(dir.path(), partition_b).unwrap();
+            let (id_b, mut store_b) = create_test_partition(dir.path(), "gc-isolation-b");
+            partition_b = id_b;
             hash_b = store_b
                 .put(b"partition b content, unreferenced by any manifest")
                 .unwrap();
             store_b.seal_active().unwrap();
         }
         {
-            let mut store_a = PartitionStore::open(dir.path(), partition_a).unwrap();
+            let (id_a, mut store_a) = create_test_partition(dir.path(), "gc-isolation-a");
+            partition_a = id_a;
             let _ = store_a.put(b"partition a content").unwrap();
             store_a.seal_active().unwrap();
         }

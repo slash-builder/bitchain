@@ -113,7 +113,7 @@ pub fn run(args: VerifyArgs) -> bitchain::Result<VerifyReport> {
                         // confirm it reaches the identical address.
                         match build_fragment_tree(&bytes, &entry.chunking_profile, &mut store) {
                             Ok(rebuilt) => {
-                                if rebuilt.root.hash != root_hash
+                                if rebuilt.root != root_hash
                                     || rebuilt.depth != entry.depth
                                     || rebuilt.root_type != entry.root_type
                                 {
@@ -123,7 +123,7 @@ pub fn run(args: VerifyArgs) -> bitchain::Result<VerifyReport> {
                                          (recorded root {root_hash}, re-derived {})",
                                         path.display(),
                                         entry.path,
-                                        rebuilt.root.hash
+                                        rebuilt.root
                                     ));
                                 }
                             }

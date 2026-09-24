@@ -77,7 +77,7 @@ pub fn run(args: PackArgs) -> bitchain::Result<String> {
         manifest.entries.push(ManifestEntry {
             path: relative_path.clone(),
             context: context.to_hex(),
-            root_hash: tree.root.hash.to_hex(),
+            root_hash: tree.root.to_hex(),
             root_type: tree.root_type,
             depth: tree.depth,
             uncompressed_len: tree.uncompressed_len,
@@ -85,7 +85,7 @@ pub fn run(args: PackArgs) -> bitchain::Result<String> {
         });
         eprintln!(
             "packed {relative_path} -> {} ({} bytes, depth {})",
-            tree.root.hash, tree.uncompressed_len, tree.depth
+            tree.root, tree.uncompressed_len, tree.depth
         );
     }
 

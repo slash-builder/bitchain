@@ -26,6 +26,51 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
+    /// Provision a new partition and print its hex id. The only place a
+    /// partition is ever created -- every other command's `--partition`
+    /// operates on a partition `init` already provisioned. Every choice is
+    /// forced, not defaulted: retention class and encryption mode are set
+    /// once, here, and never change (there is no `set-retention` or
+    /// `set-encryption` command). Run this before `pack`.
+    Init {
+        /// Who this partition belongs to: a person, a household, or a
+        /// headless service principal. Closed, forever, at exactly these
+        /// three values -- a `business`/`org`/`team`/`project`/`client`/
+        /// `division` value is a segment field wearing a storage-layer
+        /// costume and is permanently out of scope for this flag.
+        #[arg(long)]
+        subject_kind: cli::init::SubjectKindArg,
+
+        /// The id hashed (with the subject kind as a domain-separator
+        /// prefix) to derive this partition's id -- an account id, a
+        /// household id, or a service principal id, depending on
+        /// `--subject-kind`.
+        #[arg(long)]
+        subject_id: String,
+
+        /// GC behavior for this partition. A class is real only if it
+        /// changes GC behaviour: `ephemeral` lets GC drop unreferenced
+        /// content aggressively; `standard` drops it only when GC is asked
+        /// to run; `durable` never drops referenced-or-not content (only
+        /// destroying the whole partition destroys its data). No default --
+        /// retention is decided once, at provisioning time, not retrofitted.
+        #[arg(long)]
+        retention: cli::init::RetentionClassArg,
+
+        /// Set once, here, and never changeable afterward -- there is no
+        /// setter. `plaintext` is the only value any command in this CLI
+        /// can currently write to; `sealed-required` is reserved for when
+        /// the key hierarchy lands and makes every write into this
+        /// partition fail closed until it does.
+        #[arg(long)]
+        encryption: cli::init::EncryptionModeArg,
+
+        /// Free-text, recorded only in the store-level, never-replicated
+        /// local bindings file. Never parsed for semantics.
+        #[arg(long)]
+        label: Option<String>,
+    },
+
     /// Ingest a file or directory, chunk + hash + compress it into the
     /// store, and print the manifest's root hash.
     Pack {
@@ -148,6 +193,19 @@ fn main() -> ExitCode {
         Ok(false) => ExitCode::FAILURE, // ran fine, but e.g. verify found a mismatch
         Err(err) => {
             eprintln!("bitchain: {err}");
+            // Every store-opening command (pack/unpack/verify/ls/gc) surfaces
+            // `StorageError::PartitionNotProvisioned` unchanged from
+            // storage-kit -- it names the partition id but not what to do
+            // about it. Name `init` here, once, rather than teaching every
+            // command's own error path about it separately.
+            if let bitchain::BitchainError::PartitionNotProvisioned(_) = err {
+                eprintln!(
+                    "  no partition.json exists for this id -- provision it first with \
+                     `bitchain init --subject-kind <person|household|service> --subject-id <id> \
+                     --retention <ephemeral|standard|durable> --encryption <plaintext|sealed-required>`, \
+                     then pass the hex id it prints as --partition to this command"
+                );
+            }
             ExitCode::FAILURE
         }
     }
@@ -157,6 +215,25 @@ fn main() -> ExitCode {
 /// reports failure, e.g. `verify` finding a hash mismatch.
 fn run(command: Commands, store_root: PathBuf) -> bitchain::Result<bool> {
     match command {
+        Commands::Init {
+            subject_kind,
+            subject_id,
+            retention,
+            encryption,
+            label,
+        } => {
+            let partition_id = cli::init::run(cli::init::InitArgs {
+                store_root,
+                subject_kind,
+                subject_id,
+                retention,
+                encryption,
+                label,
+            })?;
+            println!("{partition_id}");
+            Ok(true)
+        }
+
         Commands::Pack {
             path,
             partition,

@@ -140,6 +140,25 @@ bitchain ls      --partition <string>                          # list a partitio
 bitchain gc      --partition <string>                          # mark-and-sweep; also the only way to force-seal
 ```
 
+**Added 2026-09-24: `bitchain init`.** storage-kit 3.0.1 split
+`PartitionStore::create` from `open` (`open` no longer provisions on
+first use), and this crate had no command anywhere that ever called
+`create` — every store-opening command failed closed with `partition not
+provisioned: <id>` from the very first use. Fixed with an explicit `init`
+subcommand (DJ's ruling, `context/hot-decisions.md`, "One account,
+everything — sixteen rulings"), not auto-provisioning with defaults:
+
+```
+bitchain init --subject-kind <person|household|service> --subject-id <string> \
+  --retention <ephemeral|standard|durable> --encryption <plaintext|sealed-required> [--label <string>]
+```
+
+All four choices are required flags with no default — see `src/cli/init.rs`
+and `docs/cli-reference.md`'s `## init` section for the full contract.
+Every other store-opening command's `partition not provisioned` error now
+names `bitchain init` in its message (`src/main.rs`'s single error-reporting
+point, not duplicated per command).
+
 This is a **redesign, not a rename** of the old `ingest` / `rebuild` /
 `show` / `validate` surface — `push`/`pull`/`ls`/`gc` are new primitives
 that didn't exist in v1 (git-shaped, not single-shot ingest/rebuild).

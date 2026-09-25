@@ -58,6 +58,82 @@ other string, which is derived into a partition id as
   whole-store operations by default, since a store commonly holds more
   than one partition.
 
+**Format-v3 correction, 2026-09-24 (`storage-kit` 3.0.1):** the partition
+string a command like `pack --partition <string>` resolves is only usable
+once *some* partition has been provisioned at that id — `storage-kit` v3
+split `PartitionStore::create` from `open`, and `open` no longer
+provisions on first use. `resolve_partition`'s bare-string derivation
+(`BLAKE3(string)[0:16]`, no domain-separator prefix) can never match a
+partition `init` provisioned, since `init` always derives through a
+`person:`/`household:`/`service:`-prefixed subject (see `## init` below)
+— so in practice, every `--partition <string>` you pass to `pack`/
+`unpack`/`verify`/`ls`/`gc`/`push`/`pull` after `init` should be the raw
+32-hex-char id `init` printed, not a bare namespace string. Every
+store-opening command fails closed with `partition not provisioned: <id>`
+and names `bitchain init` in the error if you pass one that hasn't been
+provisioned.
+
+---
+
+## `init`
+
+```
+bitchain [--store <path>] init --subject-kind <person|household|service>
+  --subject-id <string> --retention <ephemeral|standard|durable>
+  --encryption <plaintext|sealed-required> [--label <string>]
+```
+
+Provisions a new partition and prints its hex id to stdout. The **only**
+bitchain command that ever calls `PartitionStore::create` — every other
+command operates on a partition `init` already provisioned, and fails
+with `partition not provisioned: <id>` if you skip this step. Every
+choice is a required flag with no default, by DJ's ruling recorded in
+`context/hot-decisions.md` ("One account, everything — sixteen rulings"):
+the create/open split exists so retention class and encryption mode are
+decided once, deliberately, and never auto-picked by the CLI.
+
+- `--subject-kind`: `person`, `household`, or `service` — closed,
+  forever, at exactly these three values. `service` is for a headless
+  principal (e.g. CI) whose key cannot be a second wrap of a person's.
+  Permanently out of scope: any segment value (`business`/`org`/`team`/
+  `project`/`client`/`division`).
+- `--subject-id`: hashed, with the subject kind as a domain-separator
+  prefix, to derive the partition id
+  (`PartitionId::for_person`/`for_household`/`for_service`) — not a raw
+  `resolve_partition` string.
+- `--retention`: `ephemeral` (GC may drop unreferenced content
+  unprompted), `standard` (GC drops unreferenced content when asked to
+  run), or `durable` (GC never drops content, referenced or not; only
+  destroying the whole partition destroys its data). No default.
+- `--encryption`: `plaintext` or `sealed-required`, set once and never
+  changeable afterward — there is no setter. `plaintext` is the only
+  value any command in this CLI can currently write to;
+  `sealed-required` is reserved for when the key hierarchy lands.
+- `--label`: free text, recorded only in the store-level, never-
+  replicated `partitions.local.json` — never parsed for semantics.
+
+**Real output:**
+
+```
+$ bitchain --store /tmp/bc-demo-store init --subject-kind household --subject-id demo-household --retention standard --encryption plaintext --label "demo household"
+provisioned partition 82d5d64ceb79bd7f809db74d1ad29d61 (subject: Household:demo-household, retention: Standard, encryption: Plaintext, label: demo household)
+pass --partition 82d5d64ceb79bd7f809db74d1ad29d61 to other commands to use this partition
+82d5d64ceb79bd7f809db74d1ad29d61
+```
+
+Re-running `init` against the same `(subject-kind, subject-id)` fails
+closed rather than silently reusing or altering the existing record:
+
+```
+$ bitchain --store /tmp/bc-demo-store init --subject-kind household --subject-id demo-household --retention standard --encryption plaintext
+bitchain: partition already provisioned: 82d5d64ceb79bd7f809db74d1ad29d61
+```
+
+**Exit code:** `0` on success, printing only the partition's hex id to
+stdout (progress/summary lines go to stderr, so
+`partition=$(bitchain init ...)` captures exactly the id). `1` on
+`PartitionAlreadyProvisioned` or any other failure.
+
 ---
 
 ## `pack`

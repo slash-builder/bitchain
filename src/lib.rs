@@ -12,9 +12,13 @@
 //! protocol + CLI layer over it.
 //!
 //! Re-exported from `storage-kit`:
-//! - [`addressing`] — `Hash`, `PartitionId`, `Address` (storage-kit's own,
-//!   internal `Context` lives under `addressing::Context` but is not the
-//!   type re-exported at the crate root — see below)
+//! - [`addressing`] — `Hash`, `PartitionId`. `Context` and `Address` are
+//!   retired from storage-kit entirely as of format v3 (the 2026-09-23
+//!   storage-addressing rulings): the engine addresses by
+//!   `(partition_id, content_id)` alone and no longer carries a logical-
+//!   identity concept for this crate to re-export or route around. This
+//!   crate's own [`context::Context`] (below) is the only `Context` that
+//!   exists anywhere in this dependency graph now.
 //! - [`fragment`] — chunking + the leaf/list-node recursive tree
 //! - [`store`] — the `ImmutableStore` trait and the reference
 //!   local-filesystem packfile implementation ([`store::PartitionStore`])
@@ -58,7 +62,7 @@ pub mod context;
 pub mod gc;
 pub mod manifest;
 
-pub use addressing::{Address, Hash, PartitionId};
+pub use addressing::{Hash, PartitionId};
 pub use context::Context;
 pub use error::{BitchainError, Result};
 pub use fragment::{ChunkingProfile, FragmentTree, RootType};

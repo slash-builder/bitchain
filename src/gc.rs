@@ -4,11 +4,31 @@
 //! each entry, walk its fragment-list tree (leaves + list-nodes) to compute
 //! the live hash set.
 //!
-//! **Sweep + repack:** write every live hash into a fresh set of packs in a
-//! staging area, then atomically swap the staged `packs/`/`active/`
-//! directories in for the partition's real ones. Dead entries are never
-//! copied forward — GC's job is exactly to not carry them into the new
-//! packs.
+//! **Sweep + repack:** copy every live entry's `(meta, payload)` byte-for-
+//! byte into a fresh set of packs in a staging area, then atomically swap
+//! the staged `packs/`/`active/` directories in for the partition's real
+//! ones. Dead entries are never copied forward — GC's job is exactly to
+//! not carry them into the new packs.
+//!
+//! **Meta-preserving, deliberately (2026-09-23 storage-addressing
+//! rulings).** The repack loop used to be `let bytes = store.get(hash)?;
+//! staged.put(&bytes)?` — a full plaintext decode-then-re-encode round
+//! trip through storage-kit's validated, format-agnostic API. That path
+//! reconstructs `EntryMeta` from scratch on the way back in, so the day
+//! `key_epoch` or `flags` carries real meaning, an ordinary GC run would
+//! silently re-stamp every entry's `key_epoch` to the staging store's
+//! current epoch and every entry's `flags` to the default, with no error
+//! and every hash still verifying — the 2026-09-22 format-reservations spec
+//! calls this out as a mandatory part of the v3 work, not a future nicety
+//! (§"Addition — the finding that changes the implementation order"). This
+//! module instead uses `PartitionStore::get_raw`/`put_raw`, the byte-exact
+//! primitives storage-kit added for exactly this job: GC relocates an
+//! entry's `(meta, payload)` verbatim, without decoding or interpreting
+//! what the meta means. That keeps GC key-blind under D-2 exactly as it
+//! does today, and it is the property that lets it stay key-blind once
+//! encryption lands — a key-holding re-encryption pass is a deliberately
+//! separate, opt-in operation with a different name, not a variant of this
+//! one.
 //!
 //! GC never crosses partitions: it only ever opens the one `PartitionStore`
 //! it was asked to collect, and only ever touches that partition's
@@ -18,10 +38,7 @@ use crate::addressing::{Hash, PartitionId};
 use crate::error::Result;
 use crate::fragment::walk_hashes;
 use crate::manifest::Manifest;
-// `ImmutableStore` replaces the old `ReadBlock`/`WriteBlock` pair (collapsed
-// in storage-kit, no behavior change); it is imported to bring get/has/put
-// into scope for the `PartitionStore` calls below.
-use crate::store::{ImmutableStore, PartitionStore};
+use crate::store::PartitionStore;
 use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
@@ -57,14 +74,19 @@ pub fn collect(store_root: &Path, partition_id: PartitionId) -> Result<GcReport>
     // record (retention_class, encryption_mode, key state) into the
     // staging store verbatim, so the swapped-in result is provisioned
     // under the same terms as the partition GC is replacing rather than
-    // under some reconstructed default.
+    // under some reconstructed default. It also fails closed if a
+    // mismatched record already exists at the destination, the same
+    // anti-laundering check a real replication push gets.
     storage_kit::copy_partition_record(store_root, &staging_root, partition_id)?;
     {
         let mut staged = PartitionStore::open(&staging_root, partition_id)?;
         for hash in &live {
-            let bytes = store.get(hash)?;
-            let rewritten = staged.put(&bytes)?;
-            debug_assert_eq!(rewritten, *hash, "content-addressed put must preserve hash");
+            // Byte-exact, meta-preserving copy — see the module docs. Never
+            // `store.get()`/`staged.put()`, which would decode and
+            // re-derive `EntryMeta` from scratch.
+            let (meta, payload) = store.get_raw(hash)?;
+            let rewritten = staged.put_raw(meta, &payload)?;
+            debug_assert_eq!(rewritten, *hash, "meta-preserving copy must preserve hash");
         }
         staged.seal_active()?;
     }
@@ -147,6 +169,7 @@ fn swap_in_staged_partition(real_root: &Path, staged_root: &Path) -> Result<()> 
 mod tests {
     use super::*;
     use crate::fragment::{build_fragment_tree, ChunkingProfile};
+    use crate::store::ImmutableStore;
     use std::path::Path;
     use storage_kit::{EncryptionMode, PartitionSpec, RetentionClass, Subject, SubjectKind};
     use tempfile::tempdir;
@@ -256,5 +279,75 @@ mod tests {
             store_b.has(&hash_b),
             "GC scoped to partition A must not reclaim partition B's content"
         );
+    }
+
+    /// The single most important test in this change (2026-09-23
+    /// storage-addressing rulings). Writes an entry carrying **non-default**
+    /// `EntryMeta` — `key_epoch`/`flags` a real writer never produces today,
+    /// via `PartitionStore::put_raw` (storage-kit's byte-exact primitive;
+    /// there is no way to do this through the normal, validated `put()`
+    /// path, by design) — runs a real `collect()`, and asserts the meta
+    /// survived byte-for-byte. This fails against the old
+    /// `store.get()`/`staged.put()` repack, which would silently re-stamp
+    /// both fields to their defaults with no error and the hash still
+    /// verifying.
+    #[test]
+    fn gc_preserves_non_default_entry_meta_through_a_collect() {
+        let dir = tempdir().unwrap();
+
+        let data = b"entry carrying non-default meta, must survive a collect byte-for-byte";
+        let (partition_id, hash, manifest_path, injected_meta);
+        {
+            let (id, mut store) = create_test_partition(dir.path(), "gc-meta-preserving-test");
+            partition_id = id;
+            let (codec, payload) = storage_kit::packfile::encode(data).unwrap();
+            // Non-default on both fields a real writer never sets today —
+            // proving the copy is meta-preserving, not merely hash-preserving.
+            let meta = storage_kit::packfile::EntryMeta {
+                hash: storage_kit::Hash::of(data),
+                codec,
+                flags: 0x01,
+                key_epoch: 7,
+                uncompressed_len: data.len() as u64,
+                stored_len: payload.len() as u64,
+            };
+            hash = meta.hash;
+            injected_meta = meta;
+            store.put_raw(meta, &payload).unwrap();
+
+            // Referenced by a manifest as a bare leaf (depth 0) — GC's mark
+            // phase (`walk_hashes`) never calls `get()` on a depth-0 leaf,
+            // so this entry's non-reserved meta never touches the
+            // validated read path during mark, only during the raw
+            // byte-copy sweep this test exists to prove.
+            let mut manifest = Manifest::new(partition_id);
+            manifest.entries.push(crate::manifest::ManifestEntry {
+                path: "meta.bin".into(),
+                context: crate::context::Context::ANONYMOUS.to_hex(),
+                root_hash: hash.to_hex(),
+                root_type: crate::fragment::RootType::Leaf,
+                depth: 0,
+                uncompressed_len: data.len() as u64,
+                chunking_profile: ChunkingProfile::Fixed { block_size: 4096 },
+            });
+            manifest_path = store
+                .write_manifest("meta", &manifest.to_json_pretty().unwrap())
+                .unwrap();
+            store.seal_active().unwrap();
+        }
+        assert!(manifest_path.exists());
+
+        let report = collect(dir.path(), partition_id).unwrap();
+        assert_eq!(report.live_count, 1);
+        assert_eq!(report.reclaimed_count, 0);
+
+        let store = PartitionStore::open(dir.path(), partition_id).unwrap();
+        let (meta_after, payload_after) = store.get_raw(&hash).unwrap();
+        assert_eq!(
+            meta_after, injected_meta,
+            "collect() must preserve entry meta byte-for-byte, not re-derive it"
+        );
+        let decoded = storage_kit::packfile::decode(meta_after.codec, &payload_after).unwrap();
+        assert_eq!(decoded, data, "payload bytes must also survive unchanged");
     }
 }

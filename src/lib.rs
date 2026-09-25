@@ -12,12 +12,19 @@
 //! protocol + CLI layer over it.
 //!
 //! Re-exported from `storage-kit`:
-//! - [`addressing`] — `Hash`, `Context`, `PartitionId`, `Address`
+//! - [`addressing`] — `Hash`, `PartitionId`, `Address` (storage-kit's own,
+//!   internal `Context` lives under `addressing::Context` but is not the
+//!   type re-exported at the crate root — see below)
 //! - [`fragment`] — chunking + the leaf/list-node recursive tree
 //! - [`store`] — the `ImmutableStore` trait and the reference
 //!   local-filesystem packfile implementation ([`store::PartitionStore`])
 //!
 //! Owned by this crate:
+//! - [`context`] — the `Context` type: a manifest reference's logical
+//!   identity, per the 2026-09-23 storage-addressing rulings. `storage-kit`
+//!   addresses purely by `(partition_id, content_id)` and knows nothing of
+//!   logical identity; `Context` is a property of a reference, and
+//!   `ManifestEntry` is where it belongs. See `src/context.rs` module docs.
 //! - [`manifest`] — the v2 manifest format
 //! - [`gc`] — mark-and-sweep, partition-scoped
 //!
@@ -47,10 +54,12 @@ pub mod error {
     pub use storage_kit::error::{Result, StorageError, StorageError as BitchainError};
 }
 
+pub mod context;
 pub mod gc;
 pub mod manifest;
 
-pub use addressing::{Address, Context, Hash, PartitionId};
+pub use addressing::{Address, Hash, PartitionId};
+pub use context::Context;
 pub use error::{BitchainError, Result};
 pub use fragment::{ChunkingProfile, FragmentTree, RootType};
 pub use gc::GcReport;

@@ -3,6 +3,7 @@
 //! module here, built entirely on the public `bitchain` library API.
 
 pub mod gc;
+pub mod init;
 pub mod ls;
 pub mod pack;
 pub mod pull;

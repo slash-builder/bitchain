@@ -47,6 +47,13 @@
 // stopped compiling entirely (14 × E0433).
 pub use storage_kit::{addressing, fragment, store};
 
+/// Partition provisioning types, re-exported from `storage-kit` (format v3,
+/// `storage-kit-format-reservations-spec-2026-09-22`). `PartitionSpec` is
+/// what `bitchain init` (`src/cli/init.rs`) builds and passes to
+/// `PartitionStore::create` -- there is no default `RetentionClass` or
+/// `EncryptionMode` anywhere in this crate either, on purpose.
+pub use storage_kit::{EncryptionMode, PartitionSpec, RetentionClass, Subject, SubjectKind};
+
 /// Error type, re-exported from `storage-kit`.
 ///
 /// `StorageError` there is the union of this crate's old `BitchainError` and

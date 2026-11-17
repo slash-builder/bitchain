@@ -1,0 +1,43 @@
+# cargo-deny policy for a public SlashBuilder Kit. Standard: context/rust-and-crates-io-standard.md
+[graph]
+all-features = true
+
+[advisories]
+version = 2
+yanked = "deny"            # a dependency that was yanked is a build we should not ship
+# Vulnerabilities and yanked crates are always errors. A crate flagged "unmaintained" is tracked debt: it is an
+# error here until the Kit lists it below WITH a reason and a review date, so it can never be silently ignored.
+ignore = [
+  # Both are "unmaintained" notices (no known vulnerability) on transitive dependencies reached through
+  # slashbuilder-storage-kit. They are tracked debt, not silent: remove each entry once storage-kit drops the crate or
+  # moves to a maintained release. Review by 2027-02-17.
+  { id = "RUSTSEC-2026-0543", reason = "chrono is unmaintained; used by slashbuilder-storage-kit for one RFC 3339 timestamp (clock feature only). Review by 2027-02-17", },
+  { id = "RUSTSEC-2026-0441", reason = "pin-utils is unmaintained; pulled in by aws-smithy-http via slashbuilder-storage-kit's S3 backend, which this CLI does not call. Review by 2027-02-17", },
+]
+
+[licenses]
+version = 2
+confidence-threshold = 0.9
+unused-allowed-license = "allow"   # the allow-list is shared; not every Kit uses every licence
+# Permissive only (Rust API Guidelines, Necessities: the crate and its dependencies have a permissive license).
+allow = [
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "MIT",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Zlib",
+  "Unicode-3.0",
+  "CC0-1.0",
+  "CDLA-Permissive-2.0",   # webpki-roots (Mozilla CA bundle data), pulled in by reqwest/hyper-rustls; permissive
+]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"  # only crates.io: a public crate cannot depend on a private registry
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

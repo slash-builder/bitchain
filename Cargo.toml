@@ -1,0 +1,45 @@
+[package]
+name = "slashbuilder-bitchain"
+version = "0.2.0"
+edition = "2021"
+rust-version = "1.88"
+description = "Content-addressed binary storage CLI for the SlashBuilder Kit ecosystem: format v2 reference client (BLAKE3 addressing, recursive fragmentation, Zstd packfiles, per-partition dedup) plus the manifest protocol and GC"
+repository = "https://github.com/slash-builder/bitchain"
+license = "Apache-2.0"
+readme = "README.md"
+keywords = ["content-addressed", "packfile", "blake3", "storage", "deduplication"]
+categories = ["command-line-utilities", "filesystem"]
+# An allow-list, not an exclude: only the library, the CLI, the schema and the docs can ship.
+include = [
+    "/src/",
+    "/docs/",
+    "/bitchain-schema.json",
+    "/README.md",
+    "/LICENSE",
+    "/CHANGELOG.md",
+]
+
+# The package is `slashbuilder-bitchain`; the library keeps its short name so `use bitchain::...` is unchanged.
+[lib]
+name = "bitchain"
+path = "src/lib.rs"
+
+# The installed binary is still `bitchain` (`cargo install slashbuilder-bitchain`).
+[[bin]]
+name = "bitchain"
+path = "src/main.rs"
+
+[dependencies]
+# The v2 storage engine (addressing, fragmentation, packfile store) lives in storage-kit; this crate is the CLI
+# and manifest protocol layer over it. The library is imported as `storage_kit`.
+slashbuilder-storage-kit = "0.2"
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "1.0"
+walkdir = "2"
+blake3 = "1"
+hex = "0.4"
+
+[dev-dependencies]
+tempfile = "3"

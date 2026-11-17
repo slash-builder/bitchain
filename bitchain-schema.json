@@ -1,0 +1,137 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/slash-builder/bitchain/releases/schema/v2",
+  "title": "Bitchain Manifest (format v2)",
+  "description": "Content-addressed fragment-tree manifest produced by `bitchain pack` and consumed by `bitchain unpack`. See docs/manifest-format.md for the full field-by-field writeup this schema mirrors — kept in lockstep by hand with src/manifest.rs per that file's own module doc comment; there is no schema-to-Rust codegen in this repo.",
+  "type": "object",
+  "required": ["format_version", "partition_id", "entries"],
+  "additionalProperties": false,
+  "properties": {
+    "format_version": {
+      "type": "integer",
+      "enum": [2],
+      "description": "Manifest format version. Always 2 for this schema. `Manifest::from_json` rejects any other value; there is no v1 (SHA-256 / flat block list) read path in this crate."
+    },
+    "partition_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{32}$",
+      "description": "16-byte partition id, hex-encoded (32 hex chars). Canonically BLAKE3(household/namespace-string)[0:16]."
+    },
+    "entries": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/manifestEntry" }
+    }
+  },
+  "definitions": {
+    "manifestEntry": {
+      "type": "object",
+      "required": [
+        "path",
+        "context",
+        "root_hash",
+        "root_type",
+        "depth",
+        "uncompressed_len",
+        "chunking_profile"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Relative path as packed; used as the target path under --output-dir on unpack."
+        },
+        "context": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{32}$",
+          "description": "16-byte logical identity, hex-encoded. All-zero (ANONYMOUS) unless `pack --identity` was supplied."
+        },
+        "root_hash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "description": "BLAKE3 hash (32 bytes, hex-encoded) of the fragment tree's root block."
+        },
+        "root_type": {
+          "type": "string",
+          "enum": ["leaf", "list"],
+          "description": "leaf: content fit in one chunk, no fold levels. list: one or more list-node fold levels sit above the leaves."
+        },
+        "depth": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of list-node levels above the leaves. Not part of the object's address; fully determined by chunking_profile + input length, carried for reconstruction convenience."
+        },
+        "uncompressed_len": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Total byte length of the original content. unpack checks the reconstructed length against this field and fails on mismatch."
+        },
+        "chunking_profile": {
+          "oneOf": [
+            { "$ref": "#/definitions/chunkingProfileFixed" },
+            { "$ref": "#/definitions/chunkingProfileFastCdc" }
+          ]
+        }
+      }
+    },
+    "chunkingProfileFixed": {
+      "type": "object",
+      "required": ["codec", "block_size"],
+      "additionalProperties": false,
+      "properties": {
+        "codec": { "const": "fixed" },
+        "block_size": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Every chunk is block_size bytes except possibly the last."
+        }
+      }
+    },
+    "chunkingProfileFastCdc": {
+      "type": "object",
+      "required": ["codec", "min_size", "avg_size", "max_size"],
+      "additionalProperties": false,
+      "properties": {
+        "codec": { "const": "fast_cdc" },
+        "min_size": { "type": "integer", "minimum": 1 },
+        "avg_size": { "type": "integer", "minimum": 1 },
+        "max_size": { "type": "integer", "minimum": 1 }
+      }
+    }
+  },
+  "examples": [
+    {
+      "format_version": 2,
+      "partition_id": "7aed631198158a211b8778bdb2267829",
+      "entries": [
+        {
+          "path": "a.txt",
+          "context": "0c1b1bc9896253c19131abb26e3b1342",
+          "root_hash": "88ddc1dfe8016046c29f23a44b25501c1125d64b51718ce4aa3eb8276b9d6ebc",
+          "root_type": "leaf",
+          "depth": 0,
+          "uncompressed_len": 54,
+          "chunking_profile": {
+            "codec": "fast_cdc",
+            "min_size": 4096,
+            "avg_size": 16384,
+            "max_size": 65536
+          }
+        },
+        {
+          "path": "b.bin",
+          "context": "1abefd54a6fcf896b10dbf2bc14c301e",
+          "root_hash": "0affc52bc586a62530b22d20d1e6f98afd4297fe9db9aed28f3441c2eefe2e28",
+          "root_type": "list",
+          "depth": 1,
+          "uncompressed_len": 200000,
+          "chunking_profile": {
+            "codec": "fixed",
+            "block_size": 1048576
+          }
+        }
+      ]
+    }
+  ],
+  "x-schema-history": "This schema describes format v2 (BLAKE3 hashes, (hash, context) addressing, leaf/list roots, tagged-union chunking profile). It replaced a schema for the retired v1 format (SHA-256 hashes, flat files[].blocks[] list, version: \"1.0\" string); no v1 manifest validates against it, and there is no --legacy read path in the CLI (see docs/manifest-format.md)."
+}

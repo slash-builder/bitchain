@@ -36,7 +36,7 @@ slashbuilder-storage-kit = "0.2"
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-thiserror = "1.0"
+thiserror = "2.0"
 walkdir = "2"
 blake3 = "1"
 hex = "0.4"

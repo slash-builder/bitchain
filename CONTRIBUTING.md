@@ -37,7 +37,7 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo run -- --help          # try the CLI
 ```
 
-Requires Rust 1.88 or newer. No other system dependencies, and no private registry: all dependencies come from
+Requires Rust 1.94 or newer. No other system dependencies, and no private registry: all dependencies come from
 crates.io.
 
 ## Code style

@@ -1,6 +1,6 @@
 [package]
 name = "slashbuilder-bitchain"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 rust-version = "1.88"
 description = "Content-addressed binary storage CLI for the SlashBuilder Kit ecosystem: format v2 reference client (BLAKE3 addressing, recursive fragmentation, Zstd packfiles, per-partition dedup) plus the manifest protocol and GC"

@@ -9,7 +9,7 @@ can be re-verified.
 - Package: **`slashbuilder-bitchain`** (installed binary: `bitchain`; library: `bitchain`)
 - Status: **alpha** (0.2.0). Storage format v2; the command surface and library API may still change before 1.0.
 - Licence: Apache-2.0
-- Minimum supported Rust: 1.88
+- Minimum supported Rust: 1.94
 
 Format v2: BLAKE3 addressing, FastCDC or fixed-size chunking, recursive
 fragmentation, Zstd packfiles, `(hash, context)` manifest references and
